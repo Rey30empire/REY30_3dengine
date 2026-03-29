@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import type { UserRole } from '@prisma/client';
 import { db } from '@/lib/db';
 import { hashPassword } from '@/lib/security/password';
 import {
@@ -15,6 +14,7 @@ import {
   getRegistrationMode,
   parseRegistrationAllowlistEmails,
 } from '@/lib/security/registration-policy';
+import type { AppUserRole } from '@/lib/security/user-roles';
 
 type RegisterRequestBody = {
   email?: string;
@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
 
     const passwordHash = hashPassword(password);
     let createdUser:
-      | { id: string; email: string; name: string | null; role: UserRole }
+      | { id: string; email: string; name: string | null; role: AppUserRole }
       | null = null;
     let role: 'OWNER' | 'VIEWER' = 'VIEWER';
     const maxRetries = 3;

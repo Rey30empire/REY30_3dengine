@@ -1,11 +1,11 @@
 import crypto from 'crypto';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import type { UserRole } from '@prisma/client';
 import { db } from '@/lib/db';
 import { hashToken, isMissingEncryptionSecretError } from './crypto';
 import { getClientIp } from './client-ip';
 import { applyCsrfCookie, clearCsrfCookie } from './csrf';
+import type { AppUserRole } from './user-roles';
 
 export const SESSION_COOKIE_NAME = 'rey30_session';
 const SESSION_TTL_DAYS = 14;
@@ -14,7 +14,7 @@ const SESSION_COOKIE_SECURE = process.env.NODE_ENV === 'production';
 const SESSION_COOKIE_SAMESITE: 'strict' | 'lax' =
   process.env.NODE_ENV === 'production' ? 'strict' : 'lax';
 
-type RoleRank = Record<UserRole, number>;
+type RoleRank = Record<AppUserRole, number>;
 
 const ROLE_RANK: RoleRank = {
   VIEWER: 1,
@@ -26,7 +26,7 @@ export type AuthUser = {
   id: string;
   email: string;
   name: string | null;
-  role: UserRole;
+  role: AppUserRole;
   isActive: boolean;
 };
 
@@ -81,11 +81,11 @@ export async function logSecurityEvent(params: {
   }
 }
 
-export function hasRequiredRole(role: UserRole, minimum: UserRole): boolean {
+export function hasRequiredRole(role: AppUserRole, minimum: AppUserRole): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[minimum];
 }
 
-export function ensureRole(role: UserRole, minimum: UserRole): void {
+export function ensureRole(role: AppUserRole, minimum: AppUserRole): void {
   if (!hasRequiredRole(role, minimum)) {
     throw new Error(`Role ${role} cannot access ${minimum} actions`);
   }
@@ -173,7 +173,7 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser 
 
 export async function requireSession(
   request: NextRequest,
-  minimumRole: UserRole = 'VIEWER'
+  minimumRole: AppUserRole = 'VIEWER'
 ): Promise<SessionUser> {
   const user = await getSessionUser(request);
   if (!user) {

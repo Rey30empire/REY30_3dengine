@@ -2,7 +2,6 @@ import {
   ApiProvider,
   BudgetApprovalStatus,
   FinOpsRemediationStatus,
-  UserRole,
 } from '@prisma/client';
 import { db } from '@/lib/db';
 import {
@@ -15,6 +14,7 @@ import {
   type UsagePolicyInput,
   type ProviderKey,
 } from '@/lib/security/usage-governance';
+import type { AppUserRole } from '@/lib/security/user-roles';
 
 const PROVIDER_TO_MODEL: Record<ProviderKey, ApiProvider> = {
   openai: ApiProvider.OPENAI,
@@ -439,7 +439,7 @@ function clampAutopilotConfig(input: Partial<UserFinOpsAutopilotConfig>): UserFi
 
 function toPolicyItem(row: {
   id: string;
-  role: UserRole;
+  role: AppUserRole;
   projectKey: string | null;
   autoApproveBelowUsd: number | null;
   requireManualForProviderChanges: boolean;
@@ -1065,7 +1065,7 @@ function normalizeApprovalInput(input: BudgetApprovalRequestInput): BudgetApprov
 }
 
 function normalizePolicyInput(input: BudgetApprovalPolicyInput): {
-  role: UserRole;
+  role: AppUserRole;
   projectKey: string | null;
   autoApproveBelowUsd: number | null;
   requireManualForProviderChanges: boolean;
@@ -1284,7 +1284,7 @@ async function resolveApprovalPolicyForRequest(
   userId: string,
   input: BudgetApprovalRequestInput
 ): Promise<{
-  role: UserRole;
+  role: AppUserRole;
   selectedPolicy: BudgetApprovalPolicyItem | null;
   shouldAutoApprove: boolean;
   autoApproveReason: string;
