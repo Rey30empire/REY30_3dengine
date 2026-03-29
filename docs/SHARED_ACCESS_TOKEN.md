@@ -20,6 +20,29 @@ REY30_SHARED_ACCESS_NAME=REY30 Shared Access
 REY30_SHARED_ACCESS_ROLE=OWNER
 ```
 
+## Invite profile OpenAI rotation
+
+The shared/invite profile now prefers a credential stored in the database for OpenAI.
+
+Bootstrap or fallback env:
+
+```env
+INVITE_PROFILE_OPENAI_API_KEY=sk-...
+```
+
+Rotate it without changing the bootstrap owner flow:
+
+```powershell
+$env:INVITE_PROFILE_OPENAI_API_KEY="sk-proj-tu-clave-nueva"
+npx tsx scripts/rotate-invite-openai-key.ts
+```
+
+Important:
+
+- Do not rotate `REY30_ENCRYPTION_KEY` / `APP_ENCRYPTION_KEY` / `NEXTAUTH_SECRET` lightly.
+- That encryption key protects stored provider credentials.
+- Rotating it without a migration will break decryption of saved secrets.
+
 ## UI flow
 
 1. Open the app.
@@ -50,3 +73,4 @@ curl https://your-domain.com/api/meshy \
 - Anyone with the shared token can consume your OpenAI and Meshy quota.
 - Treat the token like a secret.
 - Rotate it by changing `REY30_SHARED_ACCESS_TOKEN` and redeploying.
+- Rotate the shared OpenAI provider key with `INVITE_PROFILE_OPENAI_API_KEY` + `scripts/rotate-invite-openai-key.ts`.

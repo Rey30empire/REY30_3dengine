@@ -4,6 +4,8 @@ import { DEFAULT_API_CONFIG } from '@/lib/api-config';
 import { db } from '@/lib/db';
 import type { LocalAIConfig } from '@/lib/local-ai-config';
 import type { APIConfig } from '@/lib/api-config';
+import { ApiProvider, type AppApiProvider } from '@/lib/domain-enums';
+import { decryptText } from './crypto';
 import type { AppUserRole } from './user-roles';
 import { isAppUserRole } from './user-roles';
 
@@ -35,7 +37,13 @@ type SharedAccessOverrides = {
   localConfig: {
     routing?: Partial<LocalAIConfig['routing']>;
   };
-  hasSecrets: Partial<Record<'openai' | 'meshy', boolean>>;
+  hasSecrets: Partial<Record<'openai' | 'meshy' | 'runway', boolean>>;
+};
+
+type SharedProviderRecord = {
+  enabled: boolean;
+  apiKey: string;
+  config: Record<string, unknown> | null;
 };
 
 function trimEnv(name: string): string {
@@ -44,6 +52,14 @@ function trimEnv(name: string): string {
 
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function safeJsonParse(value: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function safeCompare(left: string, right: string): boolean {
@@ -176,8 +192,44 @@ export async function getSharedAccessOverridesForUserId(
     return null;
   }
 
-  const openaiKey = trimEnv('OPENAI_API_KEY');
-  const meshyKey = trimEnv('MESHY_API_KEY');
+  const credentials = await db.apiCredential.findMany({
+    where: {
+      userId: sharedUser.id,
+      provider: {
+        in: [ApiProvider.OPENAI, ApiProvider.MESHY, ApiProvider.RUNWAY],
+      },
+    },
+  });
+
+  const providerMap = new Map<AppApiProvider, SharedProviderRecord>();
+  for (const credential of credentials) {
+    providerMap.set(credential.provider, {
+      enabled: credential.enabled,
+      apiKey:
+        credential.hasApiKey && credential.encryptedApiKey
+          ? decryptText(credential.encryptedApiKey)
+          : '',
+      config:
+        credential.encryptedConfig && credential.encryptedConfig.trim()
+          ? safeJsonParse(decryptText(credential.encryptedConfig))
+          : null,
+    });
+  }
+
+  const storedOpenAI = providerMap.get(ApiProvider.OPENAI);
+  const storedMeshy = providerMap.get(ApiProvider.MESHY);
+  const storedRunway = providerMap.get(ApiProvider.RUNWAY);
+
+  const openaiKey =
+    (storedOpenAI?.enabled ? storedOpenAI.apiKey : '') ||
+    trimEnv('INVITE_PROFILE_OPENAI_API_KEY') ||
+    trimEnv('OPENAI_API_KEY');
+  const meshyKey =
+    (storedMeshy?.enabled ? storedMeshy.apiKey : '') ||
+    trimEnv('MESHY_API_KEY');
+  const runwayKey =
+    (storedRunway?.enabled ? storedRunway.apiKey : '') ||
+    trimEnv('RUNWAY_API_KEY');
 
   return {
     apiConfig: {
@@ -185,31 +237,69 @@ export async function getSharedAccessOverridesForUserId(
         chat: openaiKey ? 'openai' : DEFAULT_API_CONFIG.routing.chat,
         multimodal: 'openai',
         image: 'openai',
-        video: DEFAULT_API_CONFIG.routing.video,
+        video: runwayKey ? 'runway' : DEFAULT_API_CONFIG.routing.video,
         threeD: meshyKey ? 'meshy' : DEFAULT_API_CONFIG.routing.threeD,
       },
       openai: {
+        ...((storedOpenAI?.config as Partial<APIConfig['openai']> | null) || {}),
         enabled: openaiKey.length > 0,
         apiKey: openaiKey,
-        baseUrl: trimEnv('OPENAI_BASE_URL') || DEFAULT_API_CONFIG.openai.baseUrl,
-        organization: trimEnv('OPENAI_ORGANIZATION'),
-        project: trimEnv('OPENAI_PROJECT'),
-        textModel: trimEnv('OPENAI_TEXT_MODEL') || DEFAULT_API_CONFIG.openai.textModel,
+        baseUrl:
+          trimEnv('OPENAI_BASE_URL') ||
+          (typeof storedOpenAI?.config?.baseUrl === 'string' ? storedOpenAI.config.baseUrl : '') ||
+          DEFAULT_API_CONFIG.openai.baseUrl,
+        organization:
+          trimEnv('OPENAI_ORGANIZATION') ||
+          (typeof storedOpenAI?.config?.organization === 'string'
+            ? storedOpenAI.config.organization
+            : ''),
+        project:
+          trimEnv('OPENAI_PROJECT') ||
+          (typeof storedOpenAI?.config?.project === 'string' ? storedOpenAI.config.project : ''),
+        textModel:
+          trimEnv('OPENAI_TEXT_MODEL') ||
+          (typeof storedOpenAI?.config?.textModel === 'string'
+            ? storedOpenAI.config.textModel
+            : '') ||
+          DEFAULT_API_CONFIG.openai.textModel,
         multimodalModel:
-          trimEnv('OPENAI_MULTIMODAL_MODEL') || DEFAULT_API_CONFIG.openai.multimodalModel,
-        imageModel: trimEnv('OPENAI_IMAGE_MODEL') || DEFAULT_API_CONFIG.openai.imageModel,
-        videoModel: trimEnv('OPENAI_VIDEO_MODEL') || DEFAULT_API_CONFIG.openai.videoModel,
+          trimEnv('OPENAI_MULTIMODAL_MODEL') ||
+          (typeof storedOpenAI?.config?.multimodalModel === 'string'
+            ? storedOpenAI.config.multimodalModel
+            : '') ||
+          DEFAULT_API_CONFIG.openai.multimodalModel,
+        imageModel:
+          trimEnv('OPENAI_IMAGE_MODEL') ||
+          (typeof storedOpenAI?.config?.imageModel === 'string'
+            ? storedOpenAI.config.imageModel
+            : '') ||
+          DEFAULT_API_CONFIG.openai.imageModel,
+        videoModel:
+          trimEnv('OPENAI_VIDEO_MODEL') ||
+          (typeof storedOpenAI?.config?.videoModel === 'string'
+            ? storedOpenAI.config.videoModel
+            : '') ||
+          DEFAULT_API_CONFIG.openai.videoModel,
       },
       meshy: {
+        ...((storedMeshy?.config as Partial<APIConfig['meshy']> | null) || {}),
         enabled: meshyKey.length > 0,
         apiKey: meshyKey,
-        baseUrl: DEFAULT_API_CONFIG.meshy.baseUrl,
+        baseUrl:
+          (typeof storedMeshy?.config?.baseUrl === 'string' ? storedMeshy.config.baseUrl : '') ||
+          DEFAULT_API_CONFIG.meshy.baseUrl,
+      },
+      runway: {
+        ...((storedRunway?.config as Partial<APIConfig['runway']> | null) || {}),
+        enabled: runwayKey.length > 0,
+        apiKey: runwayKey,
       },
     },
     localConfig: {},
     hasSecrets: {
       openai: openaiKey.length > 0,
       meshy: meshyKey.length > 0,
+      runway: runwayKey.length > 0,
     },
   };
 }

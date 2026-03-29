@@ -95,4 +95,22 @@ describe('production preflight env evaluation', () => {
     const databaseCheck = result.checks.find((check) => check.id === 'database-url');
     expect(databaseCheck?.status).toBe('passed');
   });
+
+  it('accepts APP_ENCRYPTION_KEY as encryption secret alias', () => {
+    const result = evaluateProductionEnv({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://postgres:postgres@127.0.0.1:5432/rey30?schema=public',
+      APP_ENCRYPTION_KEY: 'super-secret-alias',
+      REY30_REGISTRATION_MODE: 'invite_only',
+      REY30_REGISTRATION_INVITE_TOKEN: 'invite-token',
+      REY30_BOOTSTRAP_OWNER_TOKEN: 'owner-token',
+      REY30_ALLOWED_ORIGINS: 'https://prod.example.com',
+      REY30_REMOTE_FETCH_ALLOWLIST_ASSETS: 'cdn.example.com',
+      REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION: 'true',
+    });
+
+    expect(result.ok).toBe(true);
+    const encryptionCheck = result.checks.find((check) => check.id === 'encryption-secret');
+    expect(encryptionCheck?.status).toBe('passed');
+  });
 });

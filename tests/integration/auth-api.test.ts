@@ -133,6 +133,7 @@ describe('Auth + provider API integration', () => {
       REY30_SHARED_ACCESS_EMAIL: process.env.REY30_SHARED_ACCESS_EMAIL,
       REY30_SHARED_ACCESS_NAME: process.env.REY30_SHARED_ACCESS_NAME,
       REY30_SHARED_ACCESS_ROLE: process.env.REY30_SHARED_ACCESS_ROLE,
+      INVITE_PROFILE_OPENAI_API_KEY: process.env.INVITE_PROFILE_OPENAI_API_KEY,
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,
       MESHY_API_KEY: process.env.MESHY_API_KEY,
     };
@@ -141,7 +142,8 @@ describe('Auth + provider API integration', () => {
     process.env.REY30_SHARED_ACCESS_EMAIL = 'shared-access-test@rey30.local';
     process.env.REY30_SHARED_ACCESS_NAME = 'Shared Access Test';
     process.env.REY30_SHARED_ACCESS_ROLE = 'OWNER';
-    process.env.OPENAI_API_KEY = 'sk-test-shared-openai';
+    process.env.INVITE_PROFILE_OPENAI_API_KEY = 'sk-test-shared-openai';
+    delete process.env.OPENAI_API_KEY;
     process.env.MESHY_API_KEY = 'msy-test-shared-meshy';
 
     try {

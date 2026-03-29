@@ -8,7 +8,9 @@ export class MissingEncryptionSecretError extends Error {
   readonly code = MISSING_SECRET_ERROR_CODE;
 
   constructor() {
-    super('Missing encryption secret. Define REY30_ENCRYPTION_KEY (recommended) or NEXTAUTH_SECRET.');
+    super(
+      'Missing encryption secret. Define REY30_ENCRYPTION_KEY (recommended), APP_ENCRYPTION_KEY, or NEXTAUTH_SECRET.'
+    );
     this.name = 'MissingEncryptionSecretError';
   }
 }
@@ -18,6 +20,7 @@ let cachedEncryptionKey: Buffer | null = null;
 function resolveKeySource(): string {
   const explicit = [
     process.env.REY30_ENCRYPTION_KEY,
+    process.env.APP_ENCRYPTION_KEY,
     process.env.NEXTAUTH_SECRET,
   ]
     .map((value) => (value || '').trim())

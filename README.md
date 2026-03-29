@@ -87,10 +87,11 @@ See [docs/BATCH_SCRIPT_POLICY.md](docs/BATCH_SCRIPT_POLICY.md).
 
 ## 🔒 Security Environment Notes
 
-- In production, define `REY30_ENCRYPTION_KEY` (recommended) or `NEXTAUTH_SECRET`.
+- In production, define `REY30_ENCRYPTION_KEY` (recommended), `APP_ENCRYPTION_KEY`, or `NEXTAUTH_SECRET`.
 - This key is a server encryption key (not an OpenAI/Meshy/Runway API key).
 - Even with BYOK per-user, the server encryption key is required to securely store each user's provider secrets.
 - Generate a secure key with: `pnpm run security:generate-secret`
+- Keep the encryption key stable. Rotating it without a migration will break decryption of stored provider secrets.
 - Production rate limiting now requires `REY30_UPSTASH_REDIS_REST_URL` and `REY30_UPSTASH_REDIS_REST_TOKEN` for auth and cost-heavy API routes by default.
 - Only for intentional single-instance deployments, you can opt into in-memory production fallback with `REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION=true`.
 - The local `seal:final` rehearsal can auto-bootstrap a mock Upstash-compatible backend plus a local smoke user; that convenience is only for local verification and does not replace real production credentials.
@@ -110,6 +111,16 @@ See [docs/BATCH_SCRIPT_POLICY.md](docs/BATCH_SCRIPT_POLICY.md).
 - Users register and configure their own provider API keys in `Config APIs`.
 - The platform does not provide shared provider keys.
 - Quotas, governance and audit events are tracked per user/project.
+
+## Shared Token Mode
+
+- The app also supports a no-login shared access mode for collaborators.
+- Auth is handled with `REY30_SHARED_ACCESS_TOKEN`.
+- OpenAI and Meshy can come from server-managed credentials instead of per-user BYOK.
+- The shared/invite OpenAI credential can be rotated with:
+  - `$env:INVITE_PROFILE_OPENAI_API_KEY="sk-proj-tu-clave-nueva"`
+  - `npx tsx scripts/rotate-invite-openai-key.ts`
+- Guide: [docs/SHARED_ACCESS_TOKEN.md](/C:/Users/rey30/REY30_3dengine/docs/SHARED_ACCESS_TOKEN.md)
 
 ## Netlify + Neon
 
@@ -197,6 +208,8 @@ Production deployment checklist: [docs/production-checklist.md](/C:/Users/rey30/
 Render blueprint prep: [docs/RENDER_DEPLOY_READY.md](/C:/Users/rey30/REY30_3dengine/docs/RENDER_DEPLOY_READY.md)
 
 Netlify + Neon prep: [docs/NETLIFY_NEON_SETUP.md](/C:/Users/rey30/REY30_3dengine/docs/NETLIFY_NEON_SETUP.md)
+
+Netlify mini checklist: [docs/NETLIFY_MINI_CHECKLIST.md](/C:/Users/rey30/REY30_3dengine/docs/NETLIFY_MINI_CHECKLIST.md)
 
 ---
 

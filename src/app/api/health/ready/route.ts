@@ -47,7 +47,7 @@ export async function GET() {
   const reasons: string[] = [];
   const warnings: string[] = [];
   const missingSecretReason =
-    'Missing encryption secret. Define REY30_ENCRYPTION_KEY or NEXTAUTH_SECRET to enable encrypted user secrets.';
+    'Missing encryption secret. Define REY30_ENCRYPTION_KEY, APP_ENCRYPTION_KEY, or NEXTAUTH_SECRET to enable encrypted user secrets.';
   const missingRateLimitReason =
     'Missing distributed rate limit backend. Define REY30_UPSTASH_REDIS_REST_URL and REY30_UPSTASH_REDIS_REST_TOKEN, or set REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION=true only for a single-node deployment.';
 

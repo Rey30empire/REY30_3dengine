@@ -108,7 +108,9 @@ export function evaluateProductionEnv(env, options = {}) {
   const registrationMode = trim(env.REY30_REGISTRATION_MODE).toLowerCase();
   const allowedOrigins = parseCsv(env.REY30_ALLOWED_ORIGINS);
   const hasEncryptionSecret =
-    trim(env.REY30_ENCRYPTION_KEY).length > 0 || trim(env.NEXTAUTH_SECRET).length > 0;
+    trim(env.REY30_ENCRYPTION_KEY).length > 0 ||
+    trim(env.APP_ENCRYPTION_KEY).length > 0 ||
+    trim(env.NEXTAUTH_SECRET).length > 0;
   const hasDistributedRateLimit =
     trim(env.REY30_UPSTASH_REDIS_REST_URL || env.UPSTASH_REDIS_REST_URL).length > 0 &&
     trim(env.REY30_UPSTASH_REDIS_REST_TOKEN || env.UPSTASH_REDIS_REST_TOKEN).length > 0;
@@ -141,7 +143,7 @@ export function evaluateProductionEnv(env, options = {}) {
       : makeCheck(
           'encryption-secret',
           'failed',
-          'Missing REY30_ENCRYPTION_KEY or NEXTAUTH_SECRET.'
+          'Missing REY30_ENCRYPTION_KEY, APP_ENCRYPTION_KEY, or NEXTAUTH_SECRET.'
         )
   );
 
