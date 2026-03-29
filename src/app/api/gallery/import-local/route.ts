@@ -2,38 +2,26 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
-
-const INPUT_ROOT =
-  process.env.REY30_INPUT_GALLERY_ROOT ||
-  path.join(process.cwd(), 'input_Galeria_Rey30');
-
-const GALLERY_ROOT =
-  process.env.REY30_GALLERY_ROOT ||
-  path.join(process.env.LOCALAPPDATA || process.cwd(), 'REY30_gallery_store');
-
-const DEFAULT_SUBFOLDERS = [
-  'personajes_3d',
-  'escenas',
-  'animaciones',
-  'armas',
-  'texturas',
-  'audio',
-  'video',
-  'scripts',
-  'otros',
-];
+import {
+  DEFAULT_GALLERY_SUBFOLDERS,
+  getInputGalleryRoot,
+  sanitizeGallerySegment,
+} from '../shared';
+import {
+  getGalleryStorageInfo,
+  readStoredGalleryFile,
+  upsertStoredGalleryFile,
+} from '@/lib/server/gallery-storage';
 
 async function ensureInputRoot() {
-  await fs.mkdir(INPUT_ROOT, { recursive: true });
+  const inputRoot = getInputGalleryRoot();
+  await fs.mkdir(inputRoot, { recursive: true });
   await Promise.all(
-    DEFAULT_SUBFOLDERS.map((folder) =>
-      fs.mkdir(path.join(INPUT_ROOT, folder), { recursive: true })
+    DEFAULT_GALLERY_SUBFOLDERS.map((folder) =>
+      fs.mkdir(path.join(inputRoot, folder), { recursive: true })
     )
   );
-}
-
-async function ensureGalleryRoot() {
-  await fs.mkdir(GALLERY_ROOT, { recursive: true });
+  return inputRoot;
 }
 
 async function listFilesRecursive(baseDir: string, rel = ''): Promise<string[]> {
@@ -46,9 +34,9 @@ async function listFilesRecursive(baseDir: string, rel = ''): Promise<string[]> 
     if (entry.isDirectory()) {
       const nested = await listFilesRecursive(baseDir, relPath);
       files.push(...nested);
-    } else {
-      files.push(relPath);
+      continue;
     }
+    files.push(relPath);
   }
 
   return files;
@@ -57,10 +45,13 @@ async function listFilesRecursive(baseDir: string, rel = ''): Promise<string[]> 
 export async function GET(request: NextRequest) {
   try {
     await requireSession(request, 'EDITOR');
-    await ensureInputRoot();
-    await ensureGalleryRoot();
+    const inputRoot = await ensureInputRoot();
+    const storage = getGalleryStorageInfo();
+
     return NextResponse.json({
-      subfolders: DEFAULT_SUBFOLDERS,
+      inputRoot,
+      subfolders: DEFAULT_GALLERY_SUBFOLDERS,
+      storage,
     });
   } catch (error) {
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {
@@ -74,40 +65,41 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     await requireSession(request, 'EDITOR');
-    await ensureInputRoot();
-    await ensureGalleryRoot();
+    const inputRoot = await ensureInputRoot();
 
-    const body = await request.json().catch(() => ({} as any));
+    const body = await request.json().catch(() => ({} as Record<string, unknown>));
     const overwrite = Boolean(body?.overwrite);
     const move = Boolean(body?.move);
 
-    const files = await listFilesRecursive(INPUT_ROOT);
+    const files = await listFilesRecursive(inputRoot);
     let imported = 0;
     let skipped = 0;
     let errors = 0;
 
     for (const relPath of files) {
-      const src = path.join(INPUT_ROOT, relPath);
-      const dest = path.join(GALLERY_ROOT, relPath);
-      const destDir = path.dirname(dest);
-      await fs.mkdir(destDir, { recursive: true });
+      const normalizedRelativePath = relPath
+        .split(path.sep)
+        .map((segment) => sanitizeGallerySegment(segment))
+        .join('/');
+      const sourcePath = path.join(inputRoot, relPath);
 
       try {
-        const exists = await fs
-          .access(dest)
-          .then(() => true)
-          .catch(() => false);
-
+        const exists = await readStoredGalleryFile(normalizedRelativePath);
         if (exists && !overwrite) {
           skipped += 1;
           continue;
         }
 
+        const buffer = await fs.readFile(sourcePath);
+        await upsertStoredGalleryFile({
+          relativePath: normalizedRelativePath,
+          data: buffer,
+        });
+
         if (move) {
-          await fs.rename(src, dest);
-        } else {
-          await fs.copyFile(src, dest);
+          await fs.unlink(sourcePath).catch(() => undefined);
         }
+
         imported += 1;
       } catch {
         errors += 1;
@@ -119,6 +111,7 @@ export async function POST(request: NextRequest) {
       imported,
       skipped,
       errors,
+      storage: getGalleryStorageInfo(),
     });
   } catch (error) {
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {

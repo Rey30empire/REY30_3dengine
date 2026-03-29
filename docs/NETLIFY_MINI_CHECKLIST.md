@@ -58,13 +58,26 @@ REY30_UPSTASH_REDIS_REST_TOKEN=replace_with_upstash_token
 
 ## 4. Optional smoke / ops
 
+## 4b. Netlify Blobs stores
+
+```env
+REY30_SCRIPT_STORAGE_BACKEND=netlify-blobs
+REY30_SCRIPT_BLOB_STORE=rey30-scripts
+REY30_GALLERY_STORAGE_BACKEND=netlify-blobs
+REY30_GALLERY_BLOB_STORE=rey30-gallery
+REY30_MODULAR_CHARACTER_STORAGE_BACKEND=netlify-blobs
+REY30_MODULAR_CHARACTER_BLOB_STORE=rey30-modular-characters
+```
+
+## 5. Optional smoke / ops
+
 ```env
 REY30_OPS_TOKEN=replace_with_ops_token
 SMOKE_USER_EMAIL=replace_with_smoke_email
 SMOKE_USER_PASSWORD=replace_with_smoke_password
 ```
 
-## 5. After pasting vars
+## 6. After pasting vars
 
 1. Trigger a new deploy.
 2. Open `/api/health/live` and confirm `200`.
@@ -73,7 +86,7 @@ SMOKE_USER_PASSWORD=replace_with_smoke_password
 5. Choose `Token de acceso`.
 6. Paste `REY30_SHARED_ACCESS_TOKEN`.
 
-## 6. Rotate only the shared OpenAI key
+## 7. Rotate only the shared OpenAI key
 
 Local:
 

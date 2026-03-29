@@ -7,7 +7,7 @@ Use this checklist before promoting a release.
 - `NODE_ENV=production`
 - `DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/rey30?schema=public`
 - On Netlify DB / Neon, `NETLIFY_DATABASE_URL` can be used instead and the repo now maps it to `DATABASE_URL` automatically
-- `REY30_ENCRYPTION_KEY` or `NEXTAUTH_SECRET`
+- `REY30_ENCRYPTION_KEY` or `APP_ENCRYPTION_KEY` or `NEXTAUTH_SECRET`
 - `REY30_REGISTRATION_MODE=invite_only`
 - `REY30_REGISTRATION_INVITE_TOKEN`
 - `REY30_BOOTSTRAP_OWNER_TOKEN`
@@ -16,6 +16,11 @@ Use this checklist before promoting a release.
 - `REY30_REMOTE_FETCH_ALLOWLIST_MESHY`
 - `REY30_REMOTE_FETCH_ALLOWLIST_RUNWAY`
 - `REY30_REMOTE_FETCH_ALLOWLIST_ASSETS`
+- Optional on Netlify if you want to force the backend explicitly:
+  - `REY30_SCRIPT_STORAGE_BACKEND=netlify-blobs`
+  - `REY30_SCRIPT_BLOB_STORE=rey30-scripts`
+  - `REY30_GALLERY_STORAGE_BACKEND=netlify-blobs`
+  - `REY30_GALLERY_BLOB_STORE=rey30-gallery`
 
 ## 2. Required rate-limit backend
 
@@ -59,8 +64,8 @@ Notes:
 - `pnpm run start` expects production env vars to already be injected by the deploy platform
 - For a local production-like rehearsal, use `pnpm run start:production:local`
 - `pnpm run seal:final` now bootstraps a local mock Upstash-compatible rate-limit backend and a local smoke user only for rehearsal; remote production still requires real Upstash plus real smoke credentials
-- Netlify + Neon solves the database layer, and Script Workspace can now persist through Netlify Blobs on Netlify runtimes
-- Persistent asset/gallery/package/backup storage still needs a separate production strategy
+- Netlify + Neon solves the database layer, and Script Workspace plus Gallery can now persist through Netlify Blobs on Netlify runtimes
+- Persistent asset/package/backup storage still needs a separate production strategy
 - GitHub promotion path:
   - run `CI Quality Gate` for branch validation
   - deploy on your platform

@@ -9,6 +9,7 @@ Fecha de referencia: 28 de marzo de 2026.
 - `netlify.toml` ya fija el build a `pnpm run build`.
 - El runtime y los scripts ahora aceptan `NETLIFY_DATABASE_URL` y lo mapean a `DATABASE_URL` cuando Netlify es quien inyecta la conexion.
 - Script Workspace ahora detecta Netlify automaticamente y persiste scripts en Netlify Blobs. En local sigue usando filesystem.
+- Gallery ahora detecta Netlify automaticamente y persiste archivos en Netlify Blobs. En local sigue usando filesystem.
 - Prisma sigue siendo la capa ORM principal.
 
 ## Flujo recomendado
@@ -76,9 +77,15 @@ Para scripts persistidos, normalmente no necesitas configurar nada extra en Netl
 - `REY30_SCRIPT_STORAGE_BACKEND=netlify-blobs`
 - `REY30_SCRIPT_BLOB_STORE=rey30-scripts`
 
+Para gallery, normalmente tampoco necesitas configurar nada extra en Netlify porque el repo cambia solo a Netlify Blobs cuando detecta runtime Netlify. Si quieres forzarlo:
+
+- `REY30_GALLERY_STORAGE_BACKEND=netlify-blobs`
+- `REY30_GALLERY_BLOB_STORE=rey30-gallery`
+
 Todavia si necesitas definir manualmente:
 
 - `REY30_ENCRYPTION_KEY` o `NEXTAUTH_SECRET`
+- `APP_ENCRYPTION_KEY` tambien sirve como alias si ya lo usas en hosting
 - `REY30_REGISTRATION_MODE=invite_only`
 - `REY30_REGISTRATION_INVITE_TOKEN`
 - `REY30_BOOTSTRAP_OWNER_TOKEN`
@@ -115,11 +122,11 @@ pnpm run preflight:production -- --base-url https://tu-sitio.netlify.app
 Netlify + Neon te resuelve la base relacional.
 
 Netlify Blobs ya te resuelve Script Workspace.
+Netlify Blobs ya te resuelve Gallery.
 
 Pero este repo todavia usa rutas locales para:
 
 - assets
-- gallery
 - packages
 - backups
 

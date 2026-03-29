@@ -127,13 +127,15 @@ See [docs/BATCH_SCRIPT_POLICY.md](docs/BATCH_SCRIPT_POLICY.md).
 - The repo is now prepared to consume `NETLIFY_DATABASE_URL` automatically when Netlify DB provisions a Neon Postgres database.
 - `@netlify/neon` is installed so Netlify can provision the database for a linked site during `netlify dev` or `netlify build`.
 - `@netlify/blobs` is installed and Script Workspace now auto-switches to Netlify Blobs on Netlify runtimes, while keeping filesystem storage for local development and tests.
+- Gallery now also auto-switches to Netlify Blobs on Netlify runtimes, while keeping filesystem storage for local development and local imports.
 - Modular Character Lab now uses the same hybrid persistence strategy: filesystem locally and Netlify Blobs in Netlify runtimes when configured.
 - Prisma and the production scripts still use `DATABASE_URL` internally, but the repo now aliases `NETLIFY_DATABASE_URL` to `DATABASE_URL` when the Netlify variable is the only one present.
 - One important limit remains:
   - Netlify + Neon solves the relational database layer.
   - Script persistence is now covered through Netlify Blobs.
+  - Gallery persistence is now covered through Netlify Blobs.
   - Modular Character Lab persistence is covered for its own packages and metadata.
-  - Assets, gallery, packages, and backups still need external persistent storage because the app currently assumes writable local paths.
+  - Assets, packages, and backups still need external persistent storage because the app currently assumes writable local paths.
 
 Setup guide: [docs/NETLIFY_NEON_SETUP.md](/C:/Users/rey30/REY30_3dengine/docs/NETLIFY_NEON_SETUP.md)
 
@@ -210,6 +212,8 @@ Render blueprint prep: [docs/RENDER_DEPLOY_READY.md](/C:/Users/rey30/REY30_3deng
 Netlify + Neon prep: [docs/NETLIFY_NEON_SETUP.md](/C:/Users/rey30/REY30_3dengine/docs/NETLIFY_NEON_SETUP.md)
 
 Netlify mini checklist: [docs/NETLIFY_MINI_CHECKLIST.md](/C:/Users/rey30/REY30_3dengine/docs/NETLIFY_MINI_CHECKLIST.md)
+
+Netlify env example: [docs/NETLIFY_ENV_EXAMPLE.md](/C:/Users/rey30/REY30_3dengine/docs/NETLIFY_ENV_EXAMPLE.md)
 
 ---
 

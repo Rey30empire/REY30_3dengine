@@ -41,6 +41,22 @@ interface GalleryItem {
   category: string;
 }
 
+type GalleryStorageInfo = {
+  backend: 'filesystem' | 'netlify-blobs';
+  scope: 'filesystem' | 'deploy' | 'global';
+  root?: string;
+  storeName?: string;
+};
+
+function formatGalleryStorageLabel(storage: GalleryStorageInfo | null): string {
+  if (!storage) return '';
+  if (storage.backend === 'netlify-blobs') {
+    return `Storage: Netlify Blobs (${storage.scope}${storage.storeName ? ` / ${storage.storeName}` : ''})`;
+  }
+
+  return 'Storage: filesystem local';
+}
+
 function formatSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -77,6 +93,7 @@ export function GalleryPanel() {
   const [uploading, setUploading] = useState(false);
   const [importingLocal, setImportingLocal] = useState(false);
   const [inputRoot, setInputRoot] = useState<string>('input_Galeria_Rey30');
+  const [storageInfo, setStorageInfo] = useState<GalleryStorageInfo | null>(null);
   const [category, setCategory] = useState('general');
   const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
@@ -116,6 +133,7 @@ export function GalleryPanel() {
       .then((res) => res.json())
       .then((payload) => {
         if (payload?.inputRoot) setInputRoot(payload.inputRoot);
+        if (payload?.storage) setStorageInfo(payload.storage as GalleryStorageInfo);
       })
       .catch(() => null);
   }, []);
@@ -308,6 +326,9 @@ export function GalleryPanel() {
                 if (!response.ok || !payload?.success) {
                   throw new Error(payload?.error || 'No se pudo importar la carpeta local');
                 }
+                if (payload?.storage) {
+                  setStorageInfo(payload.storage as GalleryStorageInfo);
+                }
                 setMessage(
                   `Importados: ${payload.imported} | Omitidos: ${payload.skipped} | Errores: ${payload.errors}`
                 );
@@ -326,6 +347,9 @@ export function GalleryPanel() {
             {inputRoot}
           </span>
         </div>
+        {storageInfo && (
+          <p className="text-[11px] text-slate-500">{formatGalleryStorageLabel(storageInfo)}</p>
+        )}
         {message && <p className="text-[11px] text-slate-400">{message}</p>}
       </div>
 
