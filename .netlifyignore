@@ -1,0 +1,13 @@
+.git/
+.next/
+assets/
+input_Galeria_Rey30/
+node_modules/
+output/
+deploy-*.zip
+*.err
+*.log
+*.tsbuildinfo
+.playwright-cli/
+mini-services/
+modules/
