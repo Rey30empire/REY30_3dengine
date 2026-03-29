@@ -1,5 +1,8 @@
-import { FinOpsRemediationStatus } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  FinOpsRemediationStatus,
+  type AppFinOpsRemediationStatus,
+} from '@/lib/domain-enums';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 import { hasValidOpsToken } from '@/lib/security/ops-token';
 import { getFinOpsRemediationLogs } from '@/lib/security/usage-finops';
@@ -12,7 +15,7 @@ async function authorize(request: NextRequest): Promise<void> {
   await requireSession(request, 'OWNER');
 }
 
-function parseStatus(raw: string | null): FinOpsRemediationStatus | undefined {
+function parseStatus(raw: string | null): AppFinOpsRemediationStatus | undefined {
   const normalized = String(raw || '').toUpperCase();
   if (normalized === 'PROPOSED') return FinOpsRemediationStatus.PROPOSED;
   if (normalized === 'APPLIED') return FinOpsRemediationStatus.APPLIED;

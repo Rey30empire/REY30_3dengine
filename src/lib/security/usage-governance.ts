@@ -1,4 +1,4 @@
-import { ApiProvider } from '@prisma/client';
+import { ApiProvider, type AppApiProvider } from '@/lib/domain-enums';
 import { db } from '@/lib/db';
 
 export type ProviderKey = 'openai' | 'meshy' | 'runway' | 'ollama' | 'vllm' | 'llamacpp';
@@ -71,7 +71,7 @@ export type UsagePolicyInput = Partial<{
   perProviderBudgets: Partial<Record<ProviderKey, number | null>>;
 }>;
 
-const PROVIDER_TO_MODEL: Record<ProviderKey, ApiProvider> = {
+const PROVIDER_TO_MODEL: Record<ProviderKey, AppApiProvider> = {
   openai: ApiProvider.OPENAI,
   meshy: ApiProvider.MESHY,
   runway: ApiProvider.RUNWAY,

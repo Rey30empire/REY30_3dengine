@@ -2,7 +2,10 @@ import {
   ApiProvider,
   BudgetApprovalStatus,
   FinOpsRemediationStatus,
-} from '@prisma/client';
+  type AppApiProvider,
+  type AppBudgetApprovalStatus,
+  type AppFinOpsRemediationStatus,
+} from '@/lib/domain-enums';
 import { db } from '@/lib/db';
 import {
   estimateProviderCostUsd,
@@ -16,7 +19,7 @@ import {
 } from '@/lib/security/usage-governance';
 import type { AppUserRole } from '@/lib/security/user-roles';
 
-const PROVIDER_TO_MODEL: Record<ProviderKey, ApiProvider> = {
+const PROVIDER_TO_MODEL: Record<ProviderKey, AppApiProvider> = {
   openai: ApiProvider.OPENAI,
   meshy: ApiProvider.MESHY,
   runway: ApiProvider.RUNWAY,
@@ -25,7 +28,7 @@ const PROVIDER_TO_MODEL: Record<ProviderKey, ApiProvider> = {
   llamacpp: ApiProvider.LLAMACPP,
 };
 
-const MODEL_TO_PROVIDER: Record<ApiProvider, ProviderKey> = {
+const MODEL_TO_PROVIDER: Record<AppApiProvider, ProviderKey> = {
   [ApiProvider.OPENAI]: 'openai',
   [ApiProvider.MESHY]: 'meshy',
   [ApiProvider.RUNWAY]: 'runway',
@@ -984,7 +987,7 @@ export async function getFinOpsSnapshot(
 function toBudgetApprovalItem(row: {
   id: string;
   userId: string;
-  status: BudgetApprovalStatus;
+  status: AppBudgetApprovalStatus;
   requestedMonthlyBudgetUsd: number | null;
   requestedProviderBudgetJson: string | null;
   requestedProjectGoalsJson: string | null;
@@ -1462,7 +1465,7 @@ export async function getUserBudgetApprovalRequests(
 }
 
 export async function getBudgetApprovalRequests(params?: {
-  status?: BudgetApprovalStatus | 'ALL';
+  status?: AppBudgetApprovalStatus | 'ALL';
   take?: number;
 }): Promise<BudgetApprovalRequestItem[]> {
   const rows = await db.budgetApprovalRequest.findMany({
@@ -1953,7 +1956,7 @@ function remediationLogToItem(row: {
   incidentId: string;
   userId: string | null;
   actionType: string;
-  status: FinOpsRemediationStatus;
+  status: AppFinOpsRemediationStatus;
   reason: string;
   dryRun: boolean;
   metadata: string | null;
@@ -1980,7 +1983,7 @@ async function saveRemediationLog(params: {
   incidentId: string;
   userId: string | null;
   actionType: string;
-  status: FinOpsRemediationStatus;
+  status: AppFinOpsRemediationStatus;
   reason: string;
   dryRun: boolean;
   metadata?: Record<string, unknown> | null;
@@ -2019,7 +2022,7 @@ export async function getFinOpsRemediationLogs(params?: {
   take?: number;
   userId?: string;
   actionType?: string;
-  status?: FinOpsRemediationStatus;
+  status?: AppFinOpsRemediationStatus;
 }): Promise<FinOpsRemediationLogItem[]> {
   const rows = await db.finOpsRemediationLog.findMany({
     where: {
@@ -2129,7 +2132,7 @@ function buildActionFromIncident(
 }
 
 async function applyClosedLoopAction(action: FinOpsClosedLoopAction): Promise<{
-  status: FinOpsRemediationStatus;
+  status: AppFinOpsRemediationStatus;
   reason: string;
   metadata?: Record<string, unknown>;
 }> {

@@ -1,5 +1,5 @@
-import { BudgetApprovalStatus } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
+import { BudgetApprovalStatus, type AppBudgetApprovalStatus } from '@/lib/domain-enums';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 import { hasValidOpsToken } from '@/lib/security/ops-token';
 import { getBudgetApprovalRequests } from '@/lib/security/usage-finops';
@@ -12,7 +12,7 @@ async function authorize(request: NextRequest): Promise<void> {
   await requireSession(request, 'OWNER');
 }
 
-function parseStatus(raw: string | null): BudgetApprovalStatus | 'ALL' {
+function parseStatus(raw: string | null): AppBudgetApprovalStatus | 'ALL' {
   const normalized = String(raw || 'PENDING').toUpperCase();
   if (normalized === 'ALL') return 'ALL';
   if (normalized === 'APPROVED') return BudgetApprovalStatus.APPROVED;
@@ -41,4 +41,3 @@ export async function GET(request: NextRequest) {
     return authErrorToResponse(error);
   }
 }
-

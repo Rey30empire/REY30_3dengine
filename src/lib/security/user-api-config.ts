@@ -1,6 +1,6 @@
-import { ApiProvider } from '@prisma/client';
 import type { APIConfig } from '@/lib/api-config';
 import { DEFAULT_API_CONFIG } from '@/lib/api-config';
+import { ApiProvider, type AppApiProvider } from '@/lib/domain-enums';
 import type { LocalAIConfig } from '@/lib/local-ai-config';
 import { DEFAULT_LOCAL_AI_CONFIG } from '@/lib/local-ai-config';
 import { db } from '@/lib/db';
@@ -8,7 +8,7 @@ import { cloneJson, decryptText, encryptText } from './crypto';
 
 type ProviderKey = 'openai' | 'meshy' | 'runway' | 'ollama' | 'vllm' | 'llamacpp';
 
-type ProviderModelMap = Record<ProviderKey, ApiProvider>;
+type ProviderModelMap = Record<ProviderKey, AppApiProvider>;
 
 const PROVIDER_TO_MODEL: ProviderModelMap = {
   openai: ApiProvider.OPENAI,
@@ -24,7 +24,7 @@ const MODEL_TO_PROVIDER = Object.entries(PROVIDER_TO_MODEL).reduce(
     acc[model] = provider as ProviderKey;
     return acc;
   },
-  {} as Record<ApiProvider, ProviderKey>
+  {} as Record<AppApiProvider, ProviderKey>
 );
 
 export type UserScopedConfig = {
