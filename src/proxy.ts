@@ -40,11 +40,11 @@ function getStore(): Map<string, RateBucket> {
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CORS_ALLOWED_METHODS = 'GET,POST,PUT,PATCH,DELETE,OPTIONS';
 const CORS_ALLOWED_HEADERS =
-  'Content-Type, Authorization, X-Requested-With, X-REY30-CSRF, X-REY30-ENGINE-MODE, X-REY30-OPS-TOKEN, X-REY30-INTEGRATION-ID, X-REY30-TIMESTAMP, X-REY30-NONCE, X-REY30-SIGNATURE';
+  'Content-Type, Authorization, X-Requested-With, X-REY30-CSRF, X-REY30-ENGINE-MODE, X-REY30-OPS-TOKEN, X-REY30-INTEGRATION-ID, X-REY30-TIMESTAMP, X-REY30-NONCE, X-REY30-SIGNATURE, X-REY30-ACCESS-TOKEN';
 const API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 const INTEGRATION_PATH_PREFIX = '/api/integrations/';
 const SESSION_COOKIE_NAME = 'rey30_session';
-const CSRF_EXEMPT_PATHS = new Set(['/api/auth/login', '/api/auth/register']);
+const CSRF_EXEMPT_PATHS = new Set(['/api/auth/login', '/api/auth/register', '/api/auth/token']);
 const DISTRIBUTED_RATE_LIMIT_PATHS = new Set([
   '/api/ai',
   '/api/ai-agents',
@@ -225,6 +225,16 @@ function getRateLimitDecision(request: NextRequest): RateLimitDecision {
       windowMs: policy.authWindowMs,
       requireDistributedStore: true,
       errorMessage: 'Too many login attempts',
+    };
+  }
+
+  if (pathname === '/api/auth/token') {
+    return {
+      key: `auth_token:${clientIp}`,
+      limit: policy.loginRequestsPerWindow,
+      windowMs: policy.authWindowMs,
+      requireDistributedStore: true,
+      errorMessage: 'Too many token login attempts',
     };
   }
 

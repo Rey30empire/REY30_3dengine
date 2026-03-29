@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { hashToken, isMissingEncryptionSecretError } from './crypto';
 import { getClientIp } from './client-ip';
 import { applyCsrfCookie, clearCsrfCookie } from './csrf';
+import { resolveSharedAccessUserFromRequest } from './shared-access';
 import type { AppUserRole } from './user-roles';
 
 export const SESSION_COOKIE_NAME = 'rey30_session';
@@ -141,33 +142,40 @@ export function clearSessionCookie(response: NextResponse): NextResponse {
 
 export async function getSessionUser(request: NextRequest): Promise<SessionUser | null> {
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
-  if (!token) return null;
+  if (token) {
+    const tokenHash = hashToken(token);
+    const session = await db.authSession.findUnique({
+      where: { tokenHash },
+      include: { user: true },
+    });
 
-  const tokenHash = hashToken(token);
-  const session = await db.authSession.findUnique({
-    where: { tokenHash },
-    include: { user: true },
-  });
+    if (session) {
+      if (session.expiresAt.getTime() <= Date.now()) {
+        await db.authSession.delete({ where: { id: session.id } }).catch(() => undefined);
+      } else if (session.user.isActive) {
+        await db.authSession.update({
+          where: { id: session.id },
+          data: { lastSeenAt: new Date() },
+        }).catch(() => undefined);
 
-  if (!session) return null;
-  if (session.expiresAt.getTime() <= Date.now()) {
-    await db.authSession.delete({ where: { id: session.id } }).catch(() => undefined);
-    return null;
+        return {
+          id: session.user.id,
+          email: session.user.email,
+          name: session.user.name,
+          role: session.user.role,
+          isActive: session.user.isActive,
+          sessionId: session.id,
+        };
+      }
+    }
   }
-  if (!session.user.isActive) return null;
 
-  await db.authSession.update({
-    where: { id: session.id },
-    data: { lastSeenAt: new Date() },
-  }).catch(() => undefined);
+  const sharedUser = await resolveSharedAccessUserFromRequest(request);
+  if (!sharedUser) return null;
 
   return {
-    id: session.user.id,
-    email: session.user.email,
-    name: session.user.name,
-    role: session.user.role,
-    isActive: session.user.isActive,
-    sessionId: session.id,
+    ...sharedUser,
+    sessionId: 'shared-access',
   };
 }
 
@@ -188,7 +196,7 @@ export async function requireSession(
 export function authErrorToResponse(error: unknown): NextResponse {
   const message = String(error || '');
   if (message.includes('UNAUTHORIZED')) {
-    return NextResponse.json({ error: 'Debes iniciar sesión.' }, { status: 401 });
+    return NextResponse.json({ error: 'Debes iniciar sesión o usar un token de acceso.' }, { status: 401 });
   }
   if (message.includes('FORBIDDEN')) {
     return NextResponse.json({ error: 'No tienes permisos para esta acción.' }, { status: 403 });

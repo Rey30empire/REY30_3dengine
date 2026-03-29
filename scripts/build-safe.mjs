@@ -43,7 +43,18 @@ async function syncBuildBack(shadowRoot, sourceRoot) {
 }
 
 async function buildInCurrentRoot(root) {
-  runCommand('pnpm', ['exec', 'prisma', 'generate'], { cwd: root });
+  try {
+    runCommand('pnpm', ['exec', 'prisma', 'generate'], { cwd: root });
+  } catch (error) {
+    if (process.platform !== 'win32') {
+      throw error;
+    }
+
+    process.stdout.write(
+      'prisma generate hit a Windows file lock; retrying local build with --no-engine.\n'
+    );
+    runCommand('pnpm', ['exec', 'prisma', 'generate', '--no-engine'], { cwd: root });
+  }
   runCommand('pnpm', ['exec', 'next', 'build', '--webpack'], { cwd: root });
   runCommand('node', ['scripts/prepare-standalone.mjs'], { cwd: root });
 }

@@ -5,6 +5,7 @@ import type { LocalAIConfig } from '@/lib/local-ai-config';
 import { DEFAULT_LOCAL_AI_CONFIG } from '@/lib/local-ai-config';
 import { db } from '@/lib/db';
 import { cloneJson, decryptText, encryptText } from './crypto';
+import { getSharedAccessOverridesForUserId } from './shared-access';
 
 type ProviderKey = 'openai' | 'meshy' | 'runway' | 'ollama' | 'vllm' | 'llamacpp';
 
@@ -82,6 +83,60 @@ function clearableSecret(secret: string | undefined): {
     return { clear: true, value: '' };
   }
   return { clear: false, value };
+}
+
+async function applySharedAccessOverrides(
+  userId: string,
+  config: UserScopedConfig
+): Promise<UserScopedConfig> {
+  const overrides = await getSharedAccessOverridesForUserId(userId);
+  if (!overrides) {
+    return config;
+  }
+
+  const next = cloneJson(config);
+
+  if (overrides.apiConfig.routing) {
+    next.apiConfig.routing = {
+      ...next.apiConfig.routing,
+      ...overrides.apiConfig.routing,
+    };
+  }
+
+  if (overrides.apiConfig.openai) {
+    next.apiConfig.openai = {
+      ...next.apiConfig.openai,
+      ...overrides.apiConfig.openai,
+    };
+  }
+
+  if (overrides.apiConfig.meshy) {
+    next.apiConfig.meshy = {
+      ...next.apiConfig.meshy,
+      ...overrides.apiConfig.meshy,
+    };
+  }
+
+  if (overrides.apiConfig.runway) {
+    next.apiConfig.runway = {
+      ...next.apiConfig.runway,
+      ...overrides.apiConfig.runway,
+    };
+  }
+
+  if (overrides.localConfig.routing) {
+    next.localConfig.routing = {
+      ...next.localConfig.routing,
+      ...overrides.localConfig.routing,
+    };
+  }
+
+  next.hasSecrets = {
+    ...next.hasSecrets,
+    ...overrides.hasSecrets,
+  };
+
+  return next;
 }
 
 export async function getUserScopedConfig(userId: string): Promise<UserScopedConfig> {
@@ -174,7 +229,7 @@ export async function getUserScopedConfig(userId: string): Promise<UserScopedCon
     };
   }
 
-  return base;
+  return applySharedAccessOverrides(userId, base);
 }
 
 export async function getUserScopedConfigForClient(userId: string): Promise<UserScopedConfig> {

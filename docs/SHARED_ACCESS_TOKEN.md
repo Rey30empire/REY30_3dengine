@@ -1,0 +1,52 @@
+# Shared Access Token
+
+This app can run in a shared-access mode for collaborators who should not create an account or manage their own API keys.
+
+## What it does
+
+- A collaborator pastes one shared token in the app.
+- The app creates a normal session cookie behind the scenes.
+- OpenAI and Meshy credentials come from server env vars.
+- Collaborators can also call protected API routes directly with `Authorization: Bearer <token>`.
+
+## Required env vars
+
+```env
+OPENAI_API_KEY=sk-...
+MESHY_API_KEY=msy_...
+REY30_SHARED_ACCESS_TOKEN=replace_with_shared_access_token
+REY30_SHARED_ACCESS_EMAIL=shared-access@rey30.local
+REY30_SHARED_ACCESS_NAME=REY30 Shared Access
+REY30_SHARED_ACCESS_ROLE=OWNER
+```
+
+## UI flow
+
+1. Open the app.
+2. Go to `Usuario / Config APIs`.
+3. Choose `Token de acceso`.
+4. Paste the shared token.
+5. The app creates a session and exposes OpenAI + Meshy using the server-managed credentials.
+
+## Direct API usage
+
+```bash
+curl https://your-domain.com/api/auth/session \
+  -H "Authorization: Bearer YOUR_SHARED_TOKEN"
+```
+
+```bash
+curl https://your-domain.com/api/openai?action=chat \
+  -H "Authorization: Bearer YOUR_SHARED_TOKEN"
+```
+
+```bash
+curl https://your-domain.com/api/meshy \
+  -H "Authorization: Bearer YOUR_SHARED_TOKEN"
+```
+
+## Notes
+
+- Anyone with the shared token can consume your OpenAI and Meshy quota.
+- Treat the token like a secret.
+- Rotate it by changing `REY30_SHARED_ACCESS_TOKEN` and redeploying.

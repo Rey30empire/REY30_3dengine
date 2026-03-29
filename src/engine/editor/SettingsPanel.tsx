@@ -226,12 +226,14 @@ export function SettingsPanel() {
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [permState, setPermState] = useState(() => useEngineStore.getState().automationPermissions);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
+  const [sessionAccessMode, setSessionAccessMode] = useState<'user_session' | 'shared_token' | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'token'>('login');
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authInviteToken, setAuthInviteToken] = useState('');
+  const [authAccessToken, setAuthAccessToken] = useState('');
   const [authError, setAuthError] = useState('');
   const [hasSecrets, setHasSecrets] = useState<SecretState>({
     openai: false,
@@ -256,6 +258,7 @@ export function SettingsPanel() {
 
       if (!sessionData?.authenticated) {
         setSessionUser(null);
+        setSessionAccessMode(null);
         setApiConfig(getAPIConfig());
         setLocalConfig(getLocalAIConfig());
         setAuthLoading(false);
@@ -263,6 +266,9 @@ export function SettingsPanel() {
       }
 
       setSessionUser(sessionData.user as SessionUser);
+      setSessionAccessMode(
+        sessionData.accessMode === 'shared_token' ? 'shared_token' : 'user_session'
+      );
       const cfgRes = await fetch('/api/user/api-config');
       const cfg = await cfgRes.json().catch(() => ({}));
       if (cfgRes.ok && cfg?.apiConfig && cfg?.localConfig) {
@@ -280,6 +286,7 @@ export function SettingsPanel() {
     } catch (error) {
       setAuthError(`No se pudo cargar sesión/configuración: ${String(error)}`);
       setSessionUser(null);
+      setSessionAccessMode(null);
       setApiConfig(getAPIConfig());
       setLocalConfig(getLocalAIConfig());
     } finally {
@@ -375,11 +382,18 @@ export function SettingsPanel() {
 
   const handleAuthSubmit = async () => {
     setAuthError('');
-    const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+    const endpoint =
+      authMode === 'login'
+        ? '/api/auth/login'
+        : authMode === 'register'
+          ? '/api/auth/register'
+          : '/api/auth/token';
     const payload =
       authMode === 'login'
         ? { email: authEmail, password: authPassword }
-        : { email: authEmail, password: authPassword, name: authName, inviteToken: authInviteToken };
+        : authMode === 'register'
+          ? { email: authEmail, password: authPassword, name: authName, inviteToken: authInviteToken }
+          : { token: authAccessToken };
 
     try {
       const response = await fetch(endpoint, {
@@ -394,6 +408,7 @@ export function SettingsPanel() {
       }
       setAuthPassword('');
       setAuthInviteToken('');
+      setAuthAccessToken('');
       await syncSessionAndConfig();
     } catch (error) {
       setAuthError(`Error de autenticación: ${String(error)}`);
@@ -403,6 +418,7 @@ export function SettingsPanel() {
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
     setSessionUser(null);
+    setSessionAccessMode(null);
     setHasSecrets({
       openai: false,
       meshy: false,
@@ -597,8 +613,16 @@ export function SettingsPanel() {
                     <div className="rounded-md border border-slate-800 bg-slate-950/70 p-3 text-xs text-slate-300">
                       <div>Usuario: <span className="text-slate-100">{sessionUser.email}</span></div>
                       <div>Rol: <span className="text-cyan-300">{sessionUser.role}</span></div>
+                      <div>
+                        Acceso:{' '}
+                        <span className="text-cyan-300">
+                          {sessionAccessMode === 'shared_token' ? 'token compartido' : 'sesión de usuario'}
+                        </span>
+                      </div>
                       <div className="mt-1 text-[11px] text-slate-500">
-                        Tus credenciales API se cifran en servidor y nunca se guardan en localStorage.
+                        {sessionAccessMode === 'shared_token'
+                          ? 'Esta sesión usa credenciales compartidas del servidor para OpenAI y Meshy.'
+                          : 'Tus credenciales API se cifran en servidor y nunca se guardan en localStorage.'}
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-xs">
@@ -653,7 +677,19 @@ export function SettingsPanel() {
                       >
                         Crear cuenta
                       </Button>
+                      <Button
+                        size="sm"
+                        variant={authMode === 'token' ? 'secondary' : 'outline'}
+                        onClick={() => setAuthMode('token')}
+                      >
+                        Token de acceso
+                      </Button>
                     </div>
+                    {authMode === 'token' && (
+                      <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 p-2 text-[11px] text-cyan-200">
+                        Pega el token compartido para entrar sin crear cuenta ni usar login clásico.
+                      </div>
+                    )}
                     {authMode === 'register' && (
                       <Field label="Nombre">
                         <Input value={authName} onChange={(event) => setAuthName(event.target.value)} className="bg-slate-950 border-slate-700" />
@@ -669,19 +705,36 @@ export function SettingsPanel() {
                         En entorno local/dev, la cuenta nueva inicia con rol OWNER (permisos completos).
                       </div>
                     )}
-                    <Field label="Email">
-                      <Input value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} className="bg-slate-950 border-slate-700" />
-                    </Field>
-                    <Field label="Contraseña">
-                      <Input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} className="bg-slate-950 border-slate-700" />
-                    </Field>
+                    {authMode === 'token' ? (
+                      <Field label="Token de acceso">
+                        <Input
+                          type="password"
+                          value={authAccessToken}
+                          onChange={(event) => setAuthAccessToken(event.target.value)}
+                          className="bg-slate-950 border-slate-700"
+                        />
+                      </Field>
+                    ) : (
+                      <>
+                        <Field label="Email">
+                          <Input value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} className="bg-slate-950 border-slate-700" />
+                        </Field>
+                        <Field label="Contraseña">
+                          <Input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} className="bg-slate-950 border-slate-700" />
+                        </Field>
+                      </>
+                    )}
                     {authError && (
                       <div className="rounded-md border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-200">
                         {authError}
                       </div>
                     )}
                     <Button size="sm" variant="secondary" onClick={() => void handleAuthSubmit()}>
-                      {authMode === 'login' ? 'Entrar' : 'Registrar'}
+                      {authMode === 'login'
+                        ? 'Entrar'
+                        : authMode === 'register'
+                          ? 'Registrar'
+                          : 'Entrar con token'}
                     </Button>
                   </div>
                 )}

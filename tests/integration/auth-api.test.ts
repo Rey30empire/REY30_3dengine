@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
+import { db } from '@/lib/db';
 import { GET as openaiGet } from '@/app/api/openai/route';
 import { GET as meshyGet } from '@/app/api/meshy/route';
 import { GET as runwayGet } from '@/app/api/runway/route';
 import { GET as sessionGet } from '@/app/api/auth/session/route';
 import { POST as registerPost } from '@/app/api/auth/register/route';
+import { POST as tokenPost } from '@/app/api/auth/token/route';
 import { GET as userConfigGet } from '@/app/api/user/api-config/route';
 import { GET as telemetryGet } from '@/app/api/telemetry/route';
 
@@ -123,6 +125,83 @@ describe('Auth + provider API integration', () => {
     expect(openaiPayload.configured).toBe(false);
     expect(meshyPayload.configured).toBe(false);
     expect(runwayPayload.configured).toBe(false);
+  });
+
+  it('shared access token can authenticate and expose shared OpenAI + Meshy config', async () => {
+    const previous = {
+      REY30_SHARED_ACCESS_TOKEN: process.env.REY30_SHARED_ACCESS_TOKEN,
+      REY30_SHARED_ACCESS_EMAIL: process.env.REY30_SHARED_ACCESS_EMAIL,
+      REY30_SHARED_ACCESS_NAME: process.env.REY30_SHARED_ACCESS_NAME,
+      REY30_SHARED_ACCESS_ROLE: process.env.REY30_SHARED_ACCESS_ROLE,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      MESHY_API_KEY: process.env.MESHY_API_KEY,
+    };
+
+    process.env.REY30_SHARED_ACCESS_TOKEN = 'shared-access-test-token';
+    process.env.REY30_SHARED_ACCESS_EMAIL = 'shared-access-test@rey30.local';
+    process.env.REY30_SHARED_ACCESS_NAME = 'Shared Access Test';
+    process.env.REY30_SHARED_ACCESS_ROLE = 'OWNER';
+    process.env.OPENAI_API_KEY = 'sk-test-shared-openai';
+    process.env.MESHY_API_KEY = 'msy-test-shared-meshy';
+
+    try {
+      const databaseReachable = await db.$queryRaw`SELECT 1`
+        .then(() => true)
+        .catch(() => false);
+
+      if (!databaseReachable) {
+        expect(databaseReachable).toBe(false);
+        return;
+      }
+
+      const loginResponse = await tokenPost(
+        new NextRequest('http://localhost/api/auth/token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token: 'shared-access-test-token' }),
+        })
+      );
+      const loginPayload = await loginResponse.json();
+      expect(loginResponse.status).toBe(200);
+      expect(loginPayload.success).toBe(true);
+
+      const authHeaders = {
+        authorization: 'Bearer shared-access-test-token',
+      };
+
+      const sessionResponse = await sessionGet(
+        new NextRequest('http://localhost/api/auth/session', {
+          headers: authHeaders,
+        })
+      );
+      const sessionPayload = await sessionResponse.json();
+      expect(sessionResponse.status).toBe(200);
+      expect(sessionPayload.authenticated).toBe(true);
+      expect(sessionPayload.accessMode).toBe('shared_token');
+
+      const openaiResponse = await openaiGet(
+        new NextRequest('http://localhost/api/openai', {
+          headers: authHeaders,
+        })
+      );
+      const meshyResponse = await meshyGet(
+        new NextRequest('http://localhost/api/meshy', {
+          headers: authHeaders,
+        })
+      );
+      const openaiPayload = await openaiResponse.json();
+      const meshyPayload = await meshyResponse.json();
+      expect(openaiPayload.configured).toBe(true);
+      expect(meshyPayload.configured).toBe(true);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
   });
 
   it('user api config endpoint blocks anonymous access', async () => {

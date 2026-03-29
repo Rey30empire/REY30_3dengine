@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser, logSecurityEvent } from '@/lib/security/auth';
 import { applyCsrfCookie, CSRF_COOKIE_NAME, isValidCsrfTokenFormat } from '@/lib/security/csrf';
+import { isSharedAccessUserEmail } from '@/lib/security/shared-access';
 
 export async function GET(request: NextRequest) {
   try {
@@ -11,6 +12,7 @@ export async function GET(request: NextRequest) {
 
     const response = NextResponse.json({
       authenticated: true,
+      accessMode: isSharedAccessUserEmail(user.email) ? 'shared_token' : 'user_session',
       user: {
         id: user.id,
         email: user.email,
@@ -18,8 +20,11 @@ export async function GET(request: NextRequest) {
         role: user.role,
       },
       policy: {
-        byok: true,
-        note: 'Cada usuario opera con sus propias APIs y asume costos/uso.',
+        byok: !isSharedAccessUserEmail(user.email),
+        sharedAccess: isSharedAccessUserEmail(user.email),
+        note: isSharedAccessUserEmail(user.email)
+          ? 'Acceso compartido por token. La app usa credenciales del servidor.'
+          : 'Cada usuario opera con sus propias APIs y asume costos/uso.',
       },
     });
 

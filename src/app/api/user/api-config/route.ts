@@ -9,6 +9,7 @@ import {
   saveUserScopedConfig,
 } from '@/lib/security/user-api-config';
 import { isMissingEncryptionSecretError } from '@/lib/security/crypto';
+import { isSharedAccessUserEmail } from '@/lib/security/shared-access';
 
 type SaveConfigBody = {
   apiConfig?: unknown;
@@ -21,6 +22,7 @@ export async function GET(request: NextRequest) {
   try {
     const user = await requireSession(request, 'VIEWER');
     const config = await getUserScopedConfigForClient(user.id);
+    const isSharedAccess = isSharedAccessUserEmail(user.email);
 
     await logSecurityEvent({
       request,
@@ -37,9 +39,11 @@ export async function GET(request: NextRequest) {
         role: user.role,
       },
       policy: {
-        byok: true,
-        responsibility:
-          'Cada usuario gestiona sus APIs y asume su costo/uso. El servicio solo provee la app.',
+        byok: !isSharedAccess,
+        sharedAccess: isSharedAccess,
+        responsibility: isSharedAccess
+          ? 'Sesión compartida por token. La app usa credenciales del servidor para OpenAI/Meshy.'
+          : 'Cada usuario gestiona sus APIs y asume su costo/uso. El servicio solo provee la app.',
       },
     });
   } catch (error) {
@@ -96,9 +100,11 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({
       ...saved,
       policy: {
-        byok: true,
-        responsibility:
-          'Configuración guardada para tu cuenta. Tus costos de API son tu responsabilidad.',
+        byok: !isSharedAccessUserEmail(user.email),
+        sharedAccess: isSharedAccessUserEmail(user.email),
+        responsibility: isSharedAccessUserEmail(user.email)
+          ? 'La sesión compartida usa credenciales del servidor. Los cambios locales pueden ser sobreescritos por la configuración compartida.'
+          : 'Configuración guardada para tu cuenta. Tus costos de API son tu responsabilidad.',
       },
     });
   } catch (error) {
