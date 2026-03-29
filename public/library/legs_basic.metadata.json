@@ -1,0 +1,18 @@
+{
+  "id": "legs_basic",
+  "name": "Legs Basic",
+  "category": "legs",
+  "glb": "/library/legs_basic.glb",
+  "preview": "/library/legs_basic.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "legs_socket",
+  "enabled": true,
+  "tags": ["starter", "legs", "lower"],
+  "polycount": 12,
+  "notes": "Leg module placeholder for the builder preview.",
+  "materialVariants": [
+    { "id": "denim_dark", "label": "Dark Denim", "swatch": "#203045" },
+    { "id": "denim_light", "label": "Light Denim", "swatch": "#516f91" }
+  ]
+}

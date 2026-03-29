@@ -1,0 +1,19 @@
+{
+  "id": "hair_short",
+  "name": "Hair Short",
+  "category": "hair",
+  "glb": "/library/hair_short.glb",
+  "preview": "/library/hair_short.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "hair_socket",
+  "enabled": true,
+  "tags": ["starter", "hair"],
+  "polycount": 12,
+  "notes": "Short hair placeholder for the builder preview.",
+  "materialVariants": [
+    { "id": "hair_black", "label": "Black", "swatch": "#151515" },
+    { "id": "hair_brown", "label": "Brown", "swatch": "#5c4630" },
+    { "id": "hair_blonde", "label": "Blonde", "swatch": "#d6b46d" }
+  ]
+}

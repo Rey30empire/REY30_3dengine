@@ -1,0 +1,18 @@
+{
+  "id": "hoodie",
+  "name": "Hoodie",
+  "category": "outfit",
+  "glb": "/library/hoodie.glb",
+  "preview": "/library/hoodie.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "torso_socket",
+  "enabled": true,
+  "tags": ["casual", "top", "outfit"],
+  "polycount": 12,
+  "notes": "Outfit placeholder with two colorways.",
+  "materialVariants": [
+    { "id": "hoodie_navy", "label": "Navy", "swatch": "#1f3250" },
+    { "id": "hoodie_mint", "label": "Mint", "swatch": "#4aa397" }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "id": "mannequin_a",
+  "name": "Mannequin A",
+  "category": "body",
+  "glb": "/library/mannequin_a.glb",
+  "preview": "/library/mannequin_a.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "root_socket",
+  "enabled": true,
+  "isBaseBody": true,
+  "tags": ["starter", "human", "base_body"],
+  "polycount": 12,
+  "notes": "Placeholder base body A for Character Builder.",
+  "materialVariants": [
+    { "id": "skin_default", "label": "Default Skin", "swatch": "#d3a383" },
+    { "id": "skin_tan", "label": "Tan Skin", "swatch": "#b87a57" }
+  ],
+  "colorVariants": [
+    { "id": "eyes_brown", "label": "Brown Eyes", "swatch": "#6b4423" },
+    { "id": "eyes_green", "label": "Green Eyes", "swatch": "#4c8a57" }
+  ]
+}

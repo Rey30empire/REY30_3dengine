@@ -1,0 +1,18 @@
+{
+  "id": "hat",
+  "name": "Hat",
+  "category": "accessory",
+  "glb": "/library/hat.glb",
+  "preview": "/library/hat.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "accessory_socket",
+  "enabled": true,
+  "tags": ["headwear", "accessory"],
+  "polycount": 12,
+  "notes": "Accessory placeholder for headwear.",
+  "materialVariants": [
+    { "id": "hat_graphite", "label": "Graphite", "swatch": "#334155" },
+    { "id": "hat_red", "label": "Red", "swatch": "#9f1d1d" }
+  ]
+}

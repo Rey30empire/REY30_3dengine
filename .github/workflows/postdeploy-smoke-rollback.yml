@@ -1,0 +1,115 @@
+name: Post-Deploy Smoke + Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Deployment base URL (e.g. https://my-app.example.com)
+        required: false
+        type: string
+      environment:
+        description: Target environment label
+        required: true
+        default: production
+        type: string
+      auto_rollback:
+        description: Trigger rollback webhook automatically if smoke fails
+        required: true
+        default: true
+        type: boolean
+  workflow_call:
+    inputs:
+      base_url:
+        required: false
+        type: string
+      environment:
+        required: false
+        default: production
+        type: string
+      auto_rollback:
+        required: false
+        default: true
+        type: boolean
+    secrets:
+      PRODUCTION_BASE_URL:
+        required: false
+      ROLLBACK_WEBHOOK_URL:
+        required: false
+      SMOKE_USER_EMAIL:
+        required: false
+      SMOKE_USER_PASSWORD:
+        required: false
+
+jobs:
+  smoke:
+    name: Smoke checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    env:
+      SMOKE_BASE_URL: ${{ inputs.base_url || vars.PRODUCTION_BASE_URL || secrets.PRODUCTION_BASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate base URL
+        run: |
+          if [ -z "$SMOKE_BASE_URL" ]; then
+            echo "SMOKE_BASE_URL is missing. Pass base_url or configure PRODUCTION_BASE_URL."
+            exit 1
+          fi
+
+      - name: Run post-deploy smoke
+        env:
+          SMOKE_REQUIRE_AUTHENTICATED_FLOW: "true"
+          SMOKE_USER_EMAIL: ${{ secrets.SMOKE_USER_EMAIL }}
+          SMOKE_USER_PASSWORD: ${{ secrets.SMOKE_USER_PASSWORD }}
+        run: node scripts/postdeploy-smoke.mjs --base-url "$SMOKE_BASE_URL" --report-path output/smoke-report.json
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report-${{ inputs.environment }}-${{ github.run_id }}
+          path: output/smoke-report.json
+          if-no-files-found: ignore
+
+  rollback:
+    name: Auto rollback
+    needs: smoke
+    runs-on: ubuntu-latest
+    if: ${{ needs.smoke.result == 'failure' && inputs.auto_rollback == true && secrets.ROLLBACK_WEBHOOK_URL != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Trigger rollback webhook
+        env:
+          ROLLBACK_WEBHOOK_URL: ${{ secrets.ROLLBACK_WEBHOOK_URL }}
+        run: |
+          node scripts/trigger-rollback.mjs \
+            --reason "Post-deploy smoke failed in run ${{ github.run_id }}" \
+            --environment "${{ inputs.environment }}" \
+            --release-version "${{ github.sha }}"
+
+  rollback-missing-config:
+    name: Rollback webhook missing
+    needs: smoke
+    runs-on: ubuntu-latest
+    if: ${{ needs.smoke.result == 'failure' && (inputs.auto_rollback != true || secrets.ROLLBACK_WEBHOOK_URL == '') }}
+    steps:
+      - name: Explain manual rollback
+        run: |
+          echo "Smoke checks failed, but automatic rollback is not configured."
+          echo "Set ROLLBACK_WEBHOOK_URL and re-run this workflow, or rollback manually using your platform."

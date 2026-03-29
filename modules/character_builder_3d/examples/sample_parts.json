@@ -1,0 +1,122 @@
+[
+  {
+    "id": "body_human_female_medium_v1",
+    "name": "Human Female Medium",
+    "category": "body",
+    "model_path": "Assets/Characters/Bases/body_human_female_medium_v1.glb",
+    "thumbnail": "Assets/Characters/Thumbnails/body_human_female_medium_v1.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "body_root",
+    "body_type": "female_medium",
+    "materials": ["skin_default", "skin_tan"],
+    "material_variants": [
+      { "id": "skin_default", "name": "Default Skin" },
+      { "id": "skin_tan", "name": "Tan Skin" }
+    ],
+    "color_variants": [
+      { "id": "eyes_brown", "name": "Brown Eyes" },
+      { "id": "eyes_green", "name": "Green Eyes" }
+    ]
+  },
+  {
+    "id": "head_human_female_medium_v1",
+    "name": "Head Human Female",
+    "category": "head",
+    "model_path": "Assets/Characters/Parts/Head/head_human_female_medium_v1.glb",
+    "thumbnail": "Assets/Characters/Thumbnails/head_human_female_medium_v1.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "head_socket",
+    "body_type": "female_medium",
+    "materials": ["skin_default", "skin_tan"]
+  },
+  {
+    "id": "hair_long_01",
+    "name": "Long Hair 01",
+    "category": "hair",
+    "model_path": "Assets/Characters/Parts/Hair/hair_long_01.fbx",
+    "thumbnail": "Assets/Characters/Thumbnails/hair_long_01.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "head_socket",
+    "body_type": "female_medium",
+    "materials": ["hair_blonde", "hair_black", "hair_red"],
+    "material_variants": [
+      { "id": "hair_blonde", "name": "Blonde" },
+      { "id": "hair_black", "name": "Black" },
+      { "id": "hair_red", "name": "Red" }
+    ]
+  },
+  {
+    "id": "torso_hoodie_01",
+    "name": "Hoodie 01",
+    "category": "torso",
+    "model_path": "Assets/Characters/Parts/Torso/torso_hoodie_01.glb",
+    "thumbnail": "Assets/Characters/Thumbnails/torso_hoodie_01.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "torso_socket",
+    "body_type": "female_medium",
+    "materials": ["cloth_teal", "cloth_black"],
+    "material_variants": [
+      { "id": "cloth_teal", "name": "Teal" },
+      { "id": "cloth_black", "name": "Black" }
+    ]
+  },
+  {
+    "id": "arms_sleeves_rolled_01",
+    "name": "Rolled Sleeves",
+    "category": "arms",
+    "model_path": "Assets/Characters/Parts/Arms/arms_sleeves_rolled_01.glb",
+    "thumbnail": "Assets/Characters/Thumbnails/arms_sleeves_rolled_01.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "arms_socket",
+    "body_type": "female_medium",
+    "materials": ["cloth_teal"]
+  },
+  {
+    "id": "legs_jeans_01",
+    "name": "Jeans 01",
+    "category": "legs",
+    "model_path": "Assets/Characters/Parts/Legs/legs_jeans_01.glb",
+    "thumbnail": "Assets/Characters/Thumbnails/legs_jeans_01.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "legs_socket",
+    "body_type": "female_medium",
+    "materials": ["denim_blue", "denim_black"]
+  },
+  {
+    "id": "shoes_sneakers_01",
+    "name": "Sneakers 01",
+    "category": "shoes",
+    "model_path": "Assets/Characters/Parts/Shoes/shoes_sneakers_01.glb",
+    "thumbnail": "Assets/Characters/Thumbnails/shoes_sneakers_01.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "foot_socket",
+    "body_type": "female_medium",
+    "materials": ["shoe_white", "shoe_black"]
+  },
+  {
+    "id": "outfit_casual_01",
+    "name": "Casual Outfit 01",
+    "category": "outfit",
+    "model_path": "Assets/Characters/Parts/Outfit/outfit_casual_01.glb",
+    "thumbnail": "Assets/Characters/Thumbnails/outfit_casual_01.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "outfit_socket",
+    "body_type": "female_medium",
+    "materials": ["outfit_day", "outfit_night"]
+  },
+  {
+    "id": "accessory_glasses_round_01",
+    "name": "Round Glasses",
+    "category": "accessory",
+    "model_path": "Assets/Characters/Parts/Accessories/accessory_glasses_round_01.glb",
+    "thumbnail": "Assets/Characters/Thumbnails/accessory_glasses_round_01.png",
+    "skeleton_id": "human_base_v1",
+    "attachment_socket": "accessory_socket",
+    "body_type": "female_medium",
+    "materials": ["glasses_silver", "glasses_gold"],
+    "material_variants": [
+      { "id": "glasses_silver", "name": "Silver" },
+      { "id": "glasses_gold", "name": "Gold" }
+    ]
+  }
+]

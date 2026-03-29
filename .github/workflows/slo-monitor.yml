@@ -1,0 +1,69 @@
+name: SLO Monitor
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Base URL to monitor (optional, falls back to repo variable/secret)
+        required: false
+        type: string
+      fail_on_warn:
+        description: Fail run when SLO status is warn
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  monitor:
+    name: Monitor SLO and alerts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OBS_BASE_URL: ${{ inputs.base_url || vars.PRODUCTION_BASE_URL || secrets.PRODUCTION_BASE_URL }}
+      REY30_OPS_TOKEN: ${{ secrets.REY30_OPS_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate monitor base URL
+        run: |
+          if [ -z "$OBS_BASE_URL" ]; then
+            echo "OBS_BASE_URL is missing. Set workflow input base_url or vars/secrets PRODUCTION_BASE_URL."
+            exit 1
+          fi
+
+      - name: Run SLO monitor
+        run: |
+          node scripts/monitor-slo.mjs \
+            --base-url "$OBS_BASE_URL" \
+            --fail-on-warn "${{ inputs.fail_on_warn || 'false' }}" \
+            --report-path output/slo-monitor.json
+
+      - name: Upload monitor report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slo-monitor-report
+          path: output/slo-monitor.json
+          if-no-files-found: ignore
+
+      - name: Trigger incident alert webhook
+        if: failure() && secrets.ALERT_WEBHOOK_URL != ''
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node scripts/trigger-alert-webhook.mjs \
+            --severity "critical" \
+            --environment "production" \
+            --message "SLO monitor failed for REY30 production." \
+            --run-url "$GITHUB_RUN_URL"
+

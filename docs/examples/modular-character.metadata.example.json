@@ -1,0 +1,103 @@
+{
+  "id": "mc_hero_01",
+  "projectId": "project_modular_lab",
+  "projectSlug": "modular-lab",
+  "name": "Hero Modular",
+  "slug": "hero-modular",
+  "exportProfile": "unity-ready",
+  "sourceFormat": "glb",
+  "originalDownloadMode": "single-file",
+  "storageBackend": "netlify-blobs",
+  "uploadedAt": "2026-03-28T21:00:00.000Z",
+  "updatedAt": "2026-03-28T21:00:00.000Z",
+  "sourceFiles": [
+    {
+      "fileName": "hero.glb",
+      "mimeType": "model/gltf-binary",
+      "size": 2457812,
+      "isPrimary": true
+    }
+  ],
+  "previewPath": "modular-lab/hero-modular_mc_hero_01/preview/preview.png",
+  "originalPath": "modular-lab/hero-modular_mc_hero_01/full_model/hero.glb",
+  "originalFiles": [
+    "modular-lab/hero-modular_mc_hero_01/full_model/hero.glb"
+  ],
+  "manifestPath": "modular-lab/hero-modular_mc_hero_01/metadata.json",
+  "unityManifestPath": "modular-lab/hero-modular_mc_hero_01/unity-ready/assembly.json",
+  "analysis": {
+    "sourceName": "hero.glb",
+    "sourceFormat": "glb",
+    "sourceFiles": [
+      {
+        "fileName": "hero.glb",
+        "mimeType": "model/gltf-binary",
+        "size": 2457812,
+        "isPrimary": true
+      }
+    ],
+    "sourcePrimaryFileName": "hero.glb",
+    "sourceSize": 2457812,
+    "uploadedAt": "2026-03-28T21:00:00.000Z",
+    "meshCount": 18,
+    "materialCount": 6,
+    "boneCount": 54,
+    "animationCount": 3,
+    "hasRig": true,
+    "hasAnimations": true,
+    "materials": [
+      {
+        "id": "skin",
+        "name": "skin",
+        "textureNames": ["skin_basecolor"]
+      }
+    ],
+    "meshes": [],
+    "skeleton": [],
+    "boundingBox": {
+      "min": { "x": -0.42, "y": 0.0, "z": -0.21 },
+      "max": { "x": 0.42, "y": 1.86, "z": 0.21 },
+      "size": { "x": 0.84, "y": 1.86, "z": 0.42 },
+      "center": { "x": 0.0, "y": 0.93, "z": 0.0 }
+    }
+  },
+  "parts": [
+    {
+      "id": "part_head_01",
+      "name": "Cabeza",
+      "slug": "cabeza",
+      "partType": "head",
+      "exportFormat": "glb",
+      "originalFormat": "glb",
+      "sourceNodePaths": ["root-0/head-0"],
+      "materialNames": ["skin"],
+      "textureNames": ["skin_basecolor"],
+      "hasRig": true,
+      "boneNames": ["Head", "Neck"],
+      "pivot": { "x": 0.0, "y": 1.56, "z": 0.0 },
+      "scale": { "x": 1, "y": 1, "z": 1 },
+      "boundingBox": {
+        "min": { "x": -0.17, "y": 1.33, "z": -0.16 },
+        "max": { "x": 0.17, "y": 1.79, "z": 0.16 },
+        "size": { "x": 0.34, "y": 0.46, "z": 0.32 },
+        "center": { "x": 0.0, "y": 1.56, "z": 0.0 }
+      },
+      "connectionPoints": [
+        {
+          "id": "head_socket",
+          "label": "Cabeza",
+          "targetPartType": "head",
+          "position": { "x": 0.0, "y": 1.33, "z": 0.0 },
+          "orientation": { "x": 0, "y": 0, "z": 1 }
+        }
+      ],
+      "compatibility": {
+        "ok": true,
+        "issues": []
+      },
+      "storagePath": "modular-lab/hero-modular_mc_hero_01/parts/cabeza/cabeza.glb",
+      "metadataPath": "modular-lab/hero-modular_mc_hero_01/parts/cabeza/metadata_cabeza.json",
+      "previewPath": "modular-lab/hero-modular_mc_hero_01/preview/preview.png"
+    }
+  ]
+}

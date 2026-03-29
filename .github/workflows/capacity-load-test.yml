@@ -1,0 +1,80 @@
+name: Capacity Load Test
+
+on:
+  schedule:
+    - cron: '45 4 * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Base URL to test (optional, fallback to vars/secrets)
+        required: false
+        type: string
+
+jobs:
+  load-health-and-rate-limit:
+    name: Health throughput + AI chat rate-limit check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CAP_BASE_URL: ${{ inputs.base_url || vars.PRODUCTION_BASE_URL || secrets.PRODUCTION_BASE_URL }}
+      ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+      GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate base URL
+        run: |
+          if [ -z "$CAP_BASE_URL" ]; then
+            echo "CAP_BASE_URL is missing. Configure workflow input or PRODUCTION_BASE_URL."
+            exit 1
+          fi
+
+      - name: Load test health endpoint
+        run: |
+          node scripts/load-capacity.mjs \
+            --base-url "$CAP_BASE_URL" \
+            --endpoint "/api/health/live" \
+            --method "GET" \
+            --requests "600" \
+            --concurrency "40" \
+            --accepted-statuses "200" \
+            --report-path "output/capacity-health.json"
+
+      - name: Validate AI First rate-limit behavior
+        run: |
+          node scripts/load-capacity.mjs \
+            --base-url "$CAP_BASE_URL" \
+            --endpoint "/api/ai-chat" \
+            --method "POST" \
+            --engine-mode "MODE_AI_FIRST" \
+            --body '{"prompt":"capacity probe"}' \
+            --requests "120" \
+            --concurrency "20" \
+            --accepted-statuses "200,401,429" \
+            --require-status "429" \
+            --report-path "output/capacity-ai-chat.json"
+
+      - name: Upload capacity artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capacity-load-report-${{ github.run_id }}
+          path: output/*.json
+          if-no-files-found: ignore
+
+      - name: Trigger incident alert webhook
+        if: failure() && env.ALERT_WEBHOOK_URL != ''
+        run: |
+          node scripts/trigger-alert-webhook.mjs \
+            --severity "critical" \
+            --environment "production" \
+            --message "Capacity load test failed for REY30 production." \
+            --run-url "$GITHUB_RUN_URL"
+

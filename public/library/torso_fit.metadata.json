@@ -1,0 +1,18 @@
+{
+  "id": "torso_fit",
+  "name": "Torso Fit",
+  "category": "torso",
+  "glb": "/library/torso_fit.glb",
+  "preview": "/library/torso_fit.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "torso_socket",
+  "enabled": true,
+  "tags": ["starter", "torso"],
+  "polycount": 12,
+  "notes": "Fitted torso module.",
+  "materialVariants": [
+    { "id": "torso_graphite", "label": "Graphite", "swatch": "#364152" },
+    { "id": "torso_teal", "label": "Teal", "swatch": "#227c7d" }
+  ]
+}

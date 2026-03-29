@@ -1,0 +1,46 @@
+{
+  "id": "part_left_arm_01",
+  "name": "Brazo Izquierdo",
+  "slug": "brazo-izquierdo",
+  "partType": "left_arm",
+  "exportFormat": "glb",
+  "originalFormat": "glb",
+  "sourceNodePaths": [
+    "root-0/arm-left-0",
+    "root-0/arm-left-1"
+  ],
+  "materialNames": ["cloth", "armor"],
+  "textureNames": ["cloth_basecolor", "armor_metallic"],
+  "hasRig": true,
+  "boneNames": ["LeftArm", "LeftShoulder"],
+  "pivot": { "x": -0.34, "y": 1.08, "z": 0.0 },
+  "scale": { "x": 1, "y": 1, "z": 1 },
+  "boundingBox": {
+    "min": { "x": -0.58, "y": 0.82, "z": -0.12 },
+    "max": { "x": -0.12, "y": 1.32, "z": 0.12 },
+    "size": { "x": 0.46, "y": 0.5, "z": 0.24 },
+    "center": { "x": -0.35, "y": 1.07, "z": 0.0 }
+  },
+  "connectionPoints": [
+    {
+      "id": "left_shoulder_socket",
+      "label": "Brazo Izquierdo",
+      "targetPartType": "left_arm",
+      "position": { "x": -0.34, "y": 1.32, "z": 0.0 },
+      "orientation": { "x": 0, "y": 0, "z": 1 }
+    }
+  ],
+  "compatibility": {
+    "ok": true,
+    "issues": [
+      {
+        "code": "high_material_variance",
+        "severity": "info",
+        "message": "La pieza tiene mas materiales que el promedio; revisa draw calls antes de Unity."
+      }
+    ]
+  },
+  "storagePath": "modular-lab/hero-modular_mc_hero_01/parts/brazo-izquierdo/brazo-izquierdo.glb",
+  "metadataPath": "modular-lab/hero-modular_mc_hero_01/parts/brazo-izquierdo/metadata_brazo-izquierdo.json",
+  "previewPath": "modular-lab/hero-modular_mc_hero_01/preview/preview.png"
+}

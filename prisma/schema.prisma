@@ -1,0 +1,435 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String             @id @default(cuid())
+  email         String             @unique
+  name          String?
+  passwordHash  String?
+  role          UserRole           @default(VIEWER)
+  isActive      Boolean            @default(true)
+  lastLoginAt   DateTime?
+  sessions      AuthSession[]
+  apiCredentials ApiCredential[]
+  apiSettings   UserApiSettings?
+  usagePolicy   UserUsagePolicy?
+  usageLedgers  ProviderUsageLedger[]
+  projectUsageLedgers ProjectUsageLedger[]
+  usageAlertProfile UserUsageAlertProfile?
+  projectUsageGoals ProjectUsageGoal[]
+  finopsAutopilot  UserFinOpsAutopilot?
+  finopsRemediationLogs FinOpsRemediationLog[]
+  budgetApprovalRequests BudgetApprovalRequest[] @relation("BudgetRequester")
+  budgetApprovalDecisions BudgetApprovalRequest[] @relation("BudgetDecider")
+  budgetApprovalPoliciesCreated BudgetApprovalPolicy[] @relation("BudgetPolicyCreator")
+  finopsAutomationControlsCreated FinOpsAutomationControl[] @relation("FinOpsAutomationControlCreator")
+  modularCharacterProjects ModularCharacterProject[] @relation("ModularCharacterProjectOwner")
+  modularCharacters ModularCharacter[] @relation("ModularCharacterOwner")
+  modularCharacterUploads ModularCharacterUpload[] @relation("ModularCharacterUploadOwner")
+  modularCharacterExports ModularCharacterExport[] @relation("ModularCharacterExportOwner")
+  securityLogs  SecurityAuditLog[]
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+}
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  authorId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum UserRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+enum ApiProvider {
+  OPENAI
+  MESHY
+  RUNWAY
+  OLLAMA
+  VLLM
+  LLAMACPP
+}
+
+enum BudgetApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELED
+}
+
+enum FinOpsRemediationStatus {
+  PROPOSED
+  APPLIED
+  SKIPPED
+  FAILED
+}
+
+enum ModularStorageBackend {
+  FILESYSTEM
+  NETLIFY_BLOBS
+}
+
+enum ModularExportKind {
+  FULL_ZIP
+  SELECTED_PARTS
+  ORIGINAL_BUNDLE
+  SINGLE_PART
+}
+
+model AuthSession {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  lastSeenAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model ApiCredential {
+  id              String      @id @default(cuid())
+  userId          String
+  provider        ApiProvider
+  enabled         Boolean     @default(false)
+  hasApiKey       Boolean     @default(false)
+  encryptedApiKey String?
+  encryptedConfig String?
+  lastUsedAt      DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+model UserApiSettings {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  encryptedSettings String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserUsagePolicy {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  monthlyBudgetUsd      Float    @default(25)
+  hardStopEnabled       Boolean  @default(true)
+  warningThresholdRatio Float    @default(0.85)
+  perProviderBudgetJson String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ProviderUsageLedger {
+  id               String      @id @default(cuid())
+  userId           String
+  provider         ApiProvider
+  period           String
+  requestCount     Int         @default(0)
+  estimatedCostUsd Float       @default(0)
+  estimatedUnits   Int         @default(0)
+  blocked          Boolean     @default(false)
+  lastAction       String?
+  lastUsedAt       DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider, period])
+  @@index([userId, period])
+  @@index([provider, period])
+}
+
+model ProjectUsageLedger {
+  id               String      @id @default(cuid())
+  userId           String
+  projectKey       String
+  provider         ApiProvider
+  period           String
+  requestCount     Int         @default(0)
+  estimatedCostUsd Float       @default(0)
+  estimatedUnits   Int         @default(0)
+  blocked          Boolean     @default(false)
+  lastAction       String?
+  lastUsedAt       DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectKey, provider, period])
+  @@index([userId, projectKey, period])
+  @@index([period, projectKey])
+}
+
+model UserUsageAlertProfile {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  enabled               Boolean  @default(true)
+  totalWarningRatio     Float    @default(0.85)
+  providerWarningRatio  Float    @default(0.85)
+  projectWarningRatio   Float    @default(0.85)
+  includeLocalProviders Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ProjectUsageGoal {
+  id               String   @id @default(cuid())
+  userId           String
+  projectKey       String
+  monthlyBudgetUsd Float
+  warningRatio     Float    @default(0.85)
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectKey])
+  @@index([userId, isActive])
+}
+
+model BudgetApprovalRequest {
+  id                         String               @id @default(cuid())
+  userId                     String
+  status                     BudgetApprovalStatus @default(PENDING)
+  requestedMonthlyBudgetUsd  Float?
+  requestedProviderBudgetJson String?
+  requestedProjectGoalsJson  String?
+  reason                     String?
+  decisionNote               String?
+  createdAt                  DateTime             @default(now())
+  updatedAt                  DateTime             @updatedAt
+  resolvedAt                 DateTime?
+  resolvedByUserId           String?
+  user                       User                 @relation("BudgetRequester", fields: [userId], references: [id], onDelete: Cascade)
+  resolvedBy                 User?                @relation("BudgetDecider", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+model UserFinOpsAutopilot {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  enabled            Boolean  @default(true)
+  seasonalityEnabled Boolean  @default(true)
+  budgetBufferRatio  Float    @default(0.15)
+  lookbackMonths     Int      @default(6)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model BudgetApprovalPolicy {
+  id                               String   @id @default(cuid())
+  role                             UserRole
+  projectKey                       String?
+  autoApproveBelowUsd              Float?
+  requireManualForProviderChanges  Boolean  @default(true)
+  requireReason                    Boolean  @default(false)
+  alwaysRequireManual              Boolean  @default(false)
+  enabled                          Boolean  @default(true)
+  createdByUserId                  String?
+  createdAt                        DateTime @default(now())
+  updatedAt                        DateTime @updatedAt
+  createdBy                        User?    @relation("BudgetPolicyCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([role, projectKey, enabled])
+}
+
+model FinOpsAutomationControl {
+  id                     String   @id @default(cuid())
+  controlKey             String   @unique
+  enabled                Boolean  @default(true)
+  windowStartUtc         String?  @default("01:00")
+  windowEndUtc           String?  @default("06:00")
+  cooldownMinutes        Int      @default(240)
+  maxActionsPerRun       Int      @default(15)
+  minSeverity            String   @default("high")
+  allowPolicyMutations   Boolean  @default(true)
+  allowBudgetMutations   Boolean  @default(true)
+  createdByUserId        String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  createdBy              User?    @relation("FinOpsAutomationControlCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+}
+
+model FinOpsRemediationLog {
+  id               String                 @id @default(cuid())
+  period           String
+  incidentId       String
+  userId           String?
+  actionType       String
+  status           FinOpsRemediationStatus @default(PROPOSED)
+  reason           String
+  dryRun           Boolean                @default(true)
+  metadata         String?
+  appliedAt        DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  user             User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([period, createdAt])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model SecurityAuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  target    String?
+  status    String
+  ipAddress String?
+  userAgent String?
+  metadata  String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+}
+
+model ModularCharacterProject {
+  id          String                  @id @default(cuid())
+  ownerId     String
+  slug        String
+  name        String
+  description String?
+  status      String                  @default("active")
+  owner       User                    @relation("ModularCharacterProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  characters  ModularCharacter[]
+  uploads     ModularCharacterUpload[]
+  exports     ModularCharacterExport[]
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  @@unique([ownerId, slug])
+  @@index([ownerId, createdAt])
+}
+
+model ModularCharacter {
+  id             String                 @id @default(cuid())
+  ownerId        String
+  projectId      String?
+  name           String
+  slug           String
+  exportProfile  String
+  sourceFormat   String
+  sourceFileName String
+  sourceMimeType String
+  sourceSize     Int
+  meshCount      Int                    @default(0)
+  materialCount  Int                    @default(0)
+  boneCount      Int                    @default(0)
+  animationCount Int                    @default(0)
+  hasRig         Boolean                @default(false)
+  isStatic       Boolean                @default(false)
+  storageBackend ModularStorageBackend  @default(FILESYSTEM)
+  sourcePath     String
+  previewPath    String?
+  manifestPath   String
+  unityManifestPath String
+  metadataJson   String
+  analysisJson   String
+  owner          User                   @relation("ModularCharacterOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  project        ModularCharacterProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  parts          ModularCharacterPart[]
+  uploads        ModularCharacterUpload[]
+  exports        ModularCharacterExport[]
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  @@unique([ownerId, slug])
+  @@index([ownerId, createdAt])
+  @@index([projectId, createdAt])
+}
+
+model ModularCharacterPart {
+  id                 String            @id @default(cuid())
+  characterId        String
+  name               String
+  slug               String
+  partType           String
+  category           String
+  sourceFormat       String
+  exportFormat       String
+  sourceNodePathsJson String
+  storagePath        String
+  metadataPath       String
+  previewPath        String?
+  materialCount      Int               @default(0)
+  hasRig             Boolean           @default(false)
+  metadataJson       String
+  character          ModularCharacter  @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@unique([characterId, slug])
+  @@index([characterId, partType])
+}
+
+model ModularCharacterUpload {
+  id          String                   @id @default(cuid())
+  ownerId     String
+  projectId   String?
+  characterId String?
+  fileName    String
+  mimeType    String
+  fileSize    Int
+  sourceFormat String
+  storagePath String
+  metadataJson String?
+  owner       User                     @relation("ModularCharacterUploadOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  project     ModularCharacterProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  character   ModularCharacter?        @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  createdAt   DateTime                 @default(now())
+
+  @@index([ownerId, createdAt])
+  @@index([characterId, createdAt])
+}
+
+model ModularCharacterExport {
+  id          String                   @id @default(cuid())
+  ownerId     String
+  projectId   String?
+  characterId String
+  exportKind  ModularExportKind
+  format      String
+  storagePath String
+  fileSize    Int?
+  manifestJson String?
+  owner       User                     @relation("ModularCharacterExportOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  project     ModularCharacterProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  character   ModularCharacter         @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  createdAt   DateTime                 @default(now())
+
+  @@index([characterId, createdAt])
+  @@index([ownerId, createdAt])
+}

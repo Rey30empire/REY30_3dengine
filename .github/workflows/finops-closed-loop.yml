@@ -1,0 +1,84 @@
+name: FinOps Closed Loop
+
+on:
+  schedule:
+    - cron: '45 3 * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Base URL to run closed-loop automation
+        required: false
+        type: string
+      apply_changes:
+        description: Apply remediations (false = dry-run)
+        required: true
+        default: false
+        type: boolean
+      force_window:
+        description: Ignore automation window checks
+        required: true
+        default: false
+        type: boolean
+      max_actions:
+        description: Maximum actions in this run
+        required: false
+        default: '15'
+        type: string
+
+jobs:
+  closed-loop:
+    name: Execute FinOps closed-loop
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      FINOPS_BASE_URL: ${{ inputs.base_url || vars.PRODUCTION_BASE_URL || secrets.PRODUCTION_BASE_URL }}
+      REY30_OPS_TOKEN: ${{ secrets.REY30_OPS_TOKEN }}
+      ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+      GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate required vars
+        run: |
+          if [ -z "$FINOPS_BASE_URL" ]; then
+            echo "FINOPS_BASE_URL is missing. Configure workflow input or PRODUCTION_BASE_URL."
+            exit 1
+          fi
+          if [ -z "$REY30_OPS_TOKEN" ]; then
+            echo "REY30_OPS_TOKEN is missing. Configure secret before running."
+            exit 1
+          fi
+
+      - name: Run closed-loop
+        run: |
+          node scripts/run-finops-closed-loop.mjs \
+            --base-url "$FINOPS_BASE_URL" \
+            --ops-token "$REY30_OPS_TOKEN" \
+            --dry-run "${{ inputs.apply_changes && 'false' || 'true' }}" \
+            --force "${{ inputs.force_window || 'false' }}" \
+            --max-actions "${{ inputs.max_actions || '15' }}" \
+            --report-path output/usage-closed-loop-report.json
+
+      - name: Upload closed-loop report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finops-closed-loop-report-${{ github.run_id }}
+          path: output/usage-closed-loop-report.json
+          if-no-files-found: ignore
+
+      - name: Trigger incident alert webhook
+        if: failure() && env.ALERT_WEBHOOK_URL != ''
+        run: |
+          node scripts/trigger-alert-webhook.mjs \
+            --severity "critical" \
+            --environment "production" \
+            --message "FinOps closed-loop reported failed remediations." \
+            --run-url "$GITHUB_RUN_URL"

@@ -1,0 +1,14 @@
+{
+  "id": "hand_game",
+  "name": "Hand Game",
+  "category": "arms",
+  "glb": "/library/hand_game.glb",
+  "preview": "/library/hand_game.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "arms_socket",
+  "enabled": true,
+  "tags": ["starter", "arms"],
+  "polycount": 12,
+  "notes": "Arm module placeholder for drag-and-drop assembly."
+}

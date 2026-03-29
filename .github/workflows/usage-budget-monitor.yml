@@ -1,0 +1,73 @@
+name: Usage Budget Monitor
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Base URL to monitor usage budgets
+        required: false
+        type: string
+      fail_on_warning:
+        description: Fail workflow on warning alerts (not only blocked)
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  usage-alerts:
+    name: Check usage budget alerts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      USAGE_BASE_URL: ${{ inputs.base_url || vars.PRODUCTION_BASE_URL || secrets.PRODUCTION_BASE_URL }}
+      REY30_OPS_TOKEN: ${{ secrets.REY30_OPS_TOKEN }}
+      ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+      GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate required vars
+        run: |
+          if [ -z "$USAGE_BASE_URL" ]; then
+            echo "USAGE_BASE_URL is missing. Configure workflow input or PRODUCTION_BASE_URL."
+            exit 1
+          fi
+          if [ -z "$REY30_OPS_TOKEN" ]; then
+            echo "REY30_OPS_TOKEN is missing. Configure secret before running."
+            exit 1
+          fi
+
+      - name: Run usage budget monitor
+        run: |
+          node scripts/check-usage-alerts.mjs \
+            --base-url "$USAGE_BASE_URL" \
+            --ops-token "$REY30_OPS_TOKEN" \
+            --fail-on-warning "${{ inputs.fail_on_warning || 'false' }}" \
+            --report-path output/usage-alerts.json
+
+      - name: Upload usage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usage-budget-report-${{ github.run_id }}
+          path: output/usage-alerts.json
+          if-no-files-found: ignore
+
+      - name: Trigger incident alert webhook
+        if: failure() && env.ALERT_WEBHOOK_URL != ''
+        run: |
+          node scripts/trigger-alert-webhook.mjs \
+            --severity "critical" \
+            --environment "production" \
+            --message "Usage budget monitor detected over-budget accounts." \
+            --run-url "$GITHUB_RUN_URL"
+

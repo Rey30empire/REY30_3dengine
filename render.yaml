@@ -1,0 +1,79 @@
+services:
+  - type: web
+    name: rey30-3dengine
+    runtime: node
+    plan: standard
+    autoDeployTrigger: off
+    healthCheckPath: /api/health/ready
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm run build
+    preDeployCommand: corepack enable && pnpm run db:deploy
+    startCommand: corepack enable && pnpm run start
+    disk:
+      name: rey30-data
+      mountPath: /var/data/rey30
+      sizeGB: 20
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22
+      - key: HOSTNAME
+        value: 0.0.0.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rey30-postgres
+          property: connectionString
+      - key: REY30_TRUST_PROXY
+        value: "true"
+      - key: REY30_REGISTRATION_MODE
+        value: invite_only
+      - key: REY30_ALLOW_OPEN_REGISTRATION_REMOTE
+        value: "false"
+      - key: REY30_ENABLE_TERMINAL_API
+        value: "false"
+      - key: REY30_ENABLE_TERMINAL_API_REMOTE
+        value: "false"
+      - key: REY30_REMOTE_FETCH_ALLOWLIST_OPENAI
+        value: api.openai.com
+      - key: REY30_REMOTE_FETCH_ALLOWLIST_MESHY
+        value: api.meshy.ai
+      - key: REY30_REMOTE_FETCH_ALLOWLIST_RUNWAY
+        value: api.dev.runwayml.com
+      - key: REY30_ASSET_ROOT
+        value: /var/data/rey30/assets
+      - key: REY30_GALLERY_ROOT
+        value: /var/data/rey30/gallery
+      - key: REY30_INPUT_GALLERY_ROOT
+        value: /var/data/rey30/input-gallery
+      - key: REY30_PACKAGE_ROOT
+        value: /var/data/rey30/packages
+      - key: REY30_EXPORT_ROOT
+        value: /var/data/rey30/exports
+      - key: REY30_SCRIPT_ROOT
+        value: /var/data/rey30/scripts
+      - key: REY30_SOURCE_PROJECT_DIR
+        value: /var/data/rey30/source
+      - key: REY30_BACKUP_ROOT
+        value: /var/data/rey30/backups
+      - key: REY30_ENCRYPTION_KEY
+        sync: false
+      - key: REY30_REGISTRATION_INVITE_TOKEN
+        sync: false
+      - key: REY30_BOOTSTRAP_OWNER_TOKEN
+        sync: false
+      - key: REY30_ALLOWED_ORIGINS
+        sync: false
+      - key: REY30_REMOTE_FETCH_ALLOWLIST_ASSETS
+        sync: false
+      - key: REY30_UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: REY30_UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: REY30_OPS_TOKEN
+        sync: false
+
+databases:
+  - name: rey30-postgres
+    plan: basic-1gb
+    databaseName: rey30
+    user: rey30

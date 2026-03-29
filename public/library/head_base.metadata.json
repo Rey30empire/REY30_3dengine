@@ -1,0 +1,18 @@
+{
+  "id": "head_base",
+  "name": "Head Base",
+  "category": "head",
+  "glb": "/library/head_base.glb",
+  "preview": "/library/head_base.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "head_socket",
+  "enabled": true,
+  "tags": ["starter", "head"],
+  "polycount": 12,
+  "notes": "Base head module aligned to the same humanoid skeleton.",
+  "colorVariants": [
+    { "id": "brows_dark", "label": "Dark Brows", "swatch": "#34281f" },
+    { "id": "brows_soft", "label": "Soft Brows", "swatch": "#705143" }
+  ]
+}

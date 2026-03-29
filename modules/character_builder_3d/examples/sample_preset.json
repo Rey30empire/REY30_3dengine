@@ -1,0 +1,23 @@
+{
+  "base_body_id": "body_human_female_medium_v1",
+  "base_skeleton_id": "human_base_v1",
+  "body_type": "female_medium",
+  "equipped_parts": {
+    "head": "head_human_female_medium_v1",
+    "hair": "hair_long_01",
+    "torso": "torso_hoodie_01",
+    "arms": "arms_sleeves_rolled_01",
+    "legs": "legs_jeans_01",
+    "shoes": "shoes_sneakers_01",
+    "accessory": "accessory_glasses_round_01"
+  },
+  "material_variants": {
+    "body": "skin_tan",
+    "hair": "hair_black",
+    "torso": "cloth_teal",
+    "accessory": "glasses_gold"
+  },
+  "color_variants": {
+    "body": "eyes_green"
+  }
+}

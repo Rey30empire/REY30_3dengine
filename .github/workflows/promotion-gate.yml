@@ -1,0 +1,39 @@
+name: Promotion Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Production deployment base URL. If omitted, use PRODUCTION_BASE_URL.
+        required: false
+        type: string
+      environment:
+        description: Target environment label
+        required: true
+        default: production
+        type: string
+      auto_rollback:
+        description: Trigger rollback webhook automatically if smoke fails
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: promotion-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  release-seal:
+    name: Release seal
+    uses: ./.github/workflows/ci-quality-gate.yml
+    secrets: inherit
+
+  postdeploy:
+    name: Post-deploy smoke + rollback
+    needs: release-seal
+    uses: ./.github/workflows/postdeploy-smoke-rollback.yml
+    with:
+      base_url: ${{ inputs.base_url }}
+      environment: ${{ inputs.environment }}
+      auto_rollback: ${{ inputs.auto_rollback }}
+    secrets: inherit

@@ -1,0 +1,18 @@
+{
+  "id": "boots",
+  "name": "Boots",
+  "category": "shoes",
+  "glb": "/library/boots.glb",
+  "preview": "/library/boots.preview.png",
+  "skeletonId": "human_base_v1",
+  "bodyType": "unisex_medium",
+  "attachmentSocket": "feet_socket",
+  "enabled": true,
+  "tags": ["footwear", "shoes"],
+  "polycount": 12,
+  "notes": "Footwear module placeholder.",
+  "materialVariants": [
+    { "id": "boots_black", "label": "Black", "swatch": "#171717" },
+    { "id": "boots_brown", "label": "Brown", "swatch": "#5f4028" }
+  ]
+}

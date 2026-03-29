@@ -1,0 +1,396 @@
+Original prompt: aun tiene una marca de agua en un boton a la isquierda inferion N tambien comfigura el app para usar api local mll o ai api como open ai meshy ai 3d configura par ausar api d evideo sde imagen multimodal activacion togle suich desactibacion on off runwal 2 para video ect ect falt ai; aun le falta mucho al motor 3d erramientas para crear 3d manual para animar para editar manual permisos para que la ai aga todo desde un mensaje tambien pense algunas ideas nuebas crea esto crear un nuevo sistema hb hibrido para la creacion de juegos...
+
+- 2026-03-17: Politica de launchers batch unificada: el repo mantiene un solo `.bat` propio, `start-clean-app.bat`. Los wrappers `start-production-local.bat` y `start-semi-production-local.bat` fueron eliminados y sus flujos viven ahora como flags `--production-local` y `--semi-production-local`. Cualquier agente debe extender ese archivo en lugar de crear otro `.bat`.
+- 2026-03-18: Punto 2 de cierre real reforzado con `scripts/editor-authenticated-user-smoke.mjs` y comando `pnpm smoke:editor-authenticated-user`. El smoke valida login por UI en `Config APIs`, persistencia de sesión tras reload, gating auth previo en `Assets` y `Scrib Studio`, creación de still persistido y verificación en `Assets`, además de crear/guardar/compilar/vincular un script en `Scrib Studio`.
+- 2026-03-18: Punto 3 endurecido: nueva política compartida de registro en `src/lib/security/registration-policy.ts`, `health/ready` ahora falla en producción si el registro queda abierto o falta `REY30_REGISTRATION_INVITE_TOKEN` / `REY30_BOOTSTRAP_OWNER_TOKEN`, `start-production-local.mjs` corta temprano ante postura insegura, `release-security-check.mjs` ya exige `GET /api/health/ready = ready`, y `.env.production`/docs quedaron alineados con `invite_only + invite token`.
+- 2026-03-18: Sellado final real completado con `pnpm run seal:final`. El cierre pasa `release:check`, `smoke:editor-critical`, `smoke:shadow-workspace` y `release-security-check`, dejando reporte unificado en `output/final-seal/report.json`. También se endureció la limpieza de procesos en Windows (`start-production-local`, `start-semi-production-local`, `editor-critical-smokes`, `final-seal-check`) y se alinearon los smokes a la política actual de `Origin` (`tests/integration/capacity-limits.test.ts`, `scripts/editor-project-library-smoke.mjs`).
+- 2026-03-07: Detectado que `SettingsPanel.tsx` fue borrado y `AIChatPanel.tsx` sigue usando el esquema viejo de configuración API.
+- 2026-03-07: `next.config.ts` todavía no desactiva `devIndicators`; eso explica la marca `N` en desarrollo.
+- TODO: Restaurar `SettingsPanel.tsx` con soporte para OpenAI, Meshy, Runway y proveedores locales.
+- TODO: Extender el flujo híbrido sobre `ReyPlayStudioPanel` o un panel nuevo, con escenas, assets, scripts y compilación.
+- TODO: Alinear `AIChatPanel.tsx` con rutas `/api/openai`, `/api/runway`, `/api/meshy` y proveedores locales.
+- 2026-03-07: `SettingsPanel.tsx` restaurado con tabs `Cloud`, `Local` y `Routing`; soporta OpenAI, Meshy, Runway, Ollama, vLLM y llama.cpp.
+- 2026-03-07: `next.config.ts` ahora usa `devIndicators: false`; la captura del editor ya no muestra la marca `N`.
+- 2026-03-07: Nuevo panel `Sistema HB` agregado al sidebar derecho con modo manual/híbrido/AI-first, escenas cargables, bloques de juego, scrib workflow y compile visible.
+- 2026-03-07: `AIChatPanel.tsx` actualizado para routing chat OpenAI/local, generación de imagen OpenAI, video OpenAI/Runway y 3D Meshy, con assets base registrados en el flujo híbrido.
+- 2026-03-07: Verificación visual hecha con Playwright después de instalar `playwright` en la skill local; capturas en `output/hb-fullpage.png` y `output/config-fullpage.png`.
+- TODO: Si se quiere profundizar, el siguiente tramo debería conectar subida real de archivos, pintado 3D y exportadores `.exe/.msi`.
+- 2026-03-07: Documentacion maestra agregada en `docs/MASTER_IMPLEMENTATION_PLAN.md` con fases, arquitectura, niveles de agentes y pipeline de 9 pasos.
+- 2026-03-07: Corregido bug de plantillas: `recommendedObjects` ya existe en `STARTER_TEMPLATES` y el helper de `MeshRenderer` fue tipado como `Component`.
+- 2026-03-07: Nuevo modulo `AI Agents` agregado al editor (`AIAgentLevelsPanel`) con niveles 1/2/3, agentes especializados y generacion de plan via `/api/ai-agents`.
+- 2026-03-07: Nuevo modulo `Galeria` agregado al editor (`GalleryPanel`) con persistencia real (`GET/POST/DELETE`) via `/api/gallery` guardando en `public/user-gallery`.
+- 2026-03-07: Labels de tabs del panel derecho reducidos para asegurar visibilidad de `Gal`; capturas: `output/agents-fullpage.png`, `output/gallery-fullpage.png`.
+- 2026-03-07: Galeria ajustada para entorno shadow-copy: storage persistente movido a `%LOCALAPPDATA%\\REY30_gallery_store` y servido por `/api/gallery/file`.
+- 2026-03-07: API galeria verificada con upload/listado/lectura; captura con item real en `output/gallery-with-item.png`.
+- 2026-03-07: Implementado `Script Workspace` real con API `GET/POST/PUT/DELETE /api/scripts` y compilacion por script en `POST /api/scripts/compile`.
+- 2026-03-07: Nuevo panel `ScriptWorkspacePanel` integrado al editor (tab `Scr`) con crear/abrir/editar/guardar/compilar/borrar scripts.
+- 2026-03-07: Agregado flujo de vinculo script-entidad: boton `Vincular` asigna componente `Script` a la entidad seleccionada.
+- 2026-03-07: `start-clean-app.bat` exporta `REY30_SOURCE_PROJECT_DIR` para persistencia de scripts en el proyecto fuente aun usando shadow-copy.
+- 2026-03-07: Corregido watermark/boton `N` en dev con guard `DisableNextDevIndicator` (desactiva indicador de Next y lo oculta en shadow DOM como fallback).
+- 2026-03-07: Branding de navegador actualizado: `layout.tsx` ya no usa metadata/icono de Z.ai; ahora usa identidad REY30 (`/logo.svg`).
+- 2026-03-07: Documentado el modulo en `docs/SCRIPT_WORKSPACE_IMPLEMENTATION.md`.
+- 2026-03-07: Analisis completo de `tsc --noEmit` (497 errores, 45 archivos) y plan de correccion por fases sin romper UI en `docs/TSC_ERROR_RECOVERY_PLAN.md`.
+- 2026-03-07: Fase 1 implementada (tipado ToolBuilder/createTool + hardening de ToolRegistry + fixes en command tools).
+- 2026-03-07: Resultado Fase 1: errores `tsc` bajaron de 497 a 331; bloque `src/engine/command` quedo en 0 errores.
+- 2026-03-07: Fase 6 completada (hardening/cierre): `pnpm exec tsc --noEmit` quedo en 0 errores.
+- 2026-03-07: Compatibilidad final aplicada para `three@0.183` en `LightingSystem`, `LODSystem`, `RenderPipeline` y `ShaderLibrary` sin cambios visuales de UI.
+- 2026-03-08: `AIChatPanel.tsx` ahora detecta intencion de "crear juego" (ej. "crea un juego") y construye automaticamente una base jugable (escena, terreno, jugador, camara, luz, enemigo, scripts).
+- 2026-03-08: `SceneView.tsx` sincroniza entidades reales del store al viewport 3D; lo creado por IA/manual ya se ve en escena (antes solo habia cubos demo sin reflejar store).
+- 2026-03-08: Dependencia explicita agregada `@radix-ui/react-dismissable-layer` para evitar fallo de modulo faltante en runtime.
+- 2026-03-08: `pnpm exec tsc --noEmit` validado en verde tras instalar dependencias faltantes (`@gltf-transform/*` y Radix layer).
+- 2026-03-08: Validado arranque en workspace seguro sin `#` (`C:\\Users\\rey30\\AppData\\Local\\REY30_shadow_workspaces\\REY30_3dengine__`) con `GET / 200`.
+- TODO: Mantener ejecucion diaria desde workspace seguro (sin `#`) para evitar error de Tailwind/PostCSS con null-byte en la ruta original.
+- 2026-03-08: `AIChatPanel` ahora consulta estado real de proveedores via backend (`/api/openai`, `/api/meshy`, `/api/runway`) para no bloquear por claves faltantes en localStorage cuando ya existen en `.env.local`.
+- 2026-03-08: `api/meshy` fue extendido con endpoint de estado (`GET /api/meshy` sin `taskId`) que responde `configured` y `baseUrl`, igualando comportamiento de OpenAI/Runway.
+- 2026-03-08: `SettingsPanel` (boton Probar) ahora valida Meshy con `/api/meshy`, en vez de depender solo de flags locales.
+- 2026-03-08: `SceneView` actualizado para edición manual real: drag de gizmo ahora aplica transformaciones y las persiste al store en tiempo real (`THREE.Timer` + `gizmo.getTarget()` + sync de Transform).
+- 2026-03-08: `SceneView` ahora sincroniza box-selection al store/editor (selección múltiple utilizable en Inspector) y agrega overlay de creación manual (`+ Cubo`, `+ Esfera`, `+ Luz`, `+ Camara`, `Eliminar seleccion`).
+- 2026-03-08: Warnings de Three.js corregidos en viewport: se eliminó uso de `THREE.Clock` y `PCFSoftShadowMap` en `SceneView`.
+- 2026-03-08: `EditorLayout` corregido para `react-resizable-panels`: layout horizontal ahora suma 100% (`18/57/25`) y el separador vertical usa `PanelResizeHandle` real.
+- 2026-03-08: `AIChatPanel` mejorado para evitar flujo rígido: prioriza órdenes directas de escena con orquestador automático (crear/editar/borrar) en vez de forzar generación 3D por palabras como personaje/arma/enemigo.
+- 2026-03-08: `AIChatPanel` amplía comandos libres: soporte para `lobo/wolf` como enemigo, creación de laberinto con jugador+cámara+luz, y física de salto que crea objetivo faltante (cámara o jugador) si no existe.
+- 2026-03-08: Banner de configuración ajustado: en modos `OFF` y `LOCAL` ya no se muestra “API Key requerida”; ahora solo aparece cuando chat cloud realmente necesita OpenAI.
+- 2026-03-08: Cambios sincronizados también al shadow workspace activo (`%LOCALAPPDATA%\REY30_shadow_workspaces\REY30_3dengine__`) para que se reflejen en la app en ejecución.
+- 2026-03-08: Verificación `tsc`: fuente principal compila en verde; en shadow queda un error preexistente y ajeno a estos cambios (`src/lib/db.ts` sobre `PrismaClient`).
+- TODO: Resolver el desajuste de Prisma en shadow (`@prisma/client`/tipos) para volver a `tsc` 100% verde también allí.
+- 2026-03-08: Orquestador de `AIChatPanel` extendido con pipeline automatico multi-etapa (analisis -> construccion -> entidades/gameplay -> validacion) sin asignacion manual de agentes por parte del usuario.
+- 2026-03-08: El pipeline ahora registra/agrega agentes automaticamente en store (`orchestrator`, `world_builder`, `terrain`, `model_generator`, `gameplay`, `optimization`) y crea `AgentTask` con estados `pending/processing/completed/failed`.
+- 2026-03-08: `processCommand` enruta ordenes de escena/juego al pipeline de orquestacion (`runOrchestratedPipeline`) en lugar de una sola ejecucion directa.
+- 2026-03-08: `createBasicGameElement` ahora soporta modo silencioso (`{ silent: true }`) y devuelve resultados para que el orquestador componga un reporte final por etapas sin mensajes duplicados.
+- 2026-03-08: `tsc` en fuente principal sigue en verde; shadow workspace mantiene solo error preexistente de Prisma (`src/lib/db.ts`, `PrismaClient`).
+- 2026-03-08: `start-clean-app.bat` mejorado para arranque limpio total: ahora abre ventana nueva por defecto (`--child`), cierra instancias viejas locales (puertos 3000/3001/3015, procesos node/bun asociados al proyecto), mata loops de sync colgados y limpia residuos (`dev.log`, `server.log`, `next.log`, `.next`, `.turbo`, `node_modules\\.cache`) antes de iniciar.
+- 2026-03-08: Se agregó modo `--current-window` para ejecutar en la misma ventana cuando se necesite depurar, manteniendo el mismo flujo de limpieza/cierre previo.
+- 2026-03-08: Script sincronizado también al shadow workspace activo para comportamiento consistente.
+- 2026-03-08: Nuevo plan integral de fases faltantes creado en `docs/SCRIB_ENGINE_REMEDIATION_PLAN.md`, alineado a `Scrib Engine Modular` para `MODE_MANUAL`, `MODE_HYBRID` y `MODE_AI_FIRST`.
+- 2026-03-08: `docs/MASTER_IMPLEMENTATION_PLAN.md` actualizado con referencia oficial al nuevo plan detallado.
+- TODO: Iniciar implementacion de Fase 2 (Mode Router + shell UI limpia con 3 botones Manual/Hybrid/AI).
+- 2026-03-08: Fase 2 iniciada e implementada: se añadió `engineMode` global (`MODE_MANUAL|MODE_HYBRID|MODE_AI_FIRST`) en store/tipos, con `setEngineMode` y sincronización de `aiMode`.
+- 2026-03-08: `EditorLayout` fue rediseñado a shell limpio por modo con 3 botones superiores (`Manual`, `Hybrid`, `AI`) y workspaces dedicados por modo.
+- 2026-03-08: Workspaces activos: Manual (Hierarchy+Viewport+Inspector/Scrib/Assets/Console), Hybrid (HybridPanel+Scrib+AI+Inspector+Config+Console), AI First (Viewport+Runtime Console+AI Orchestrator).
+- 2026-03-08: Botón `Render All` + controles `Play/Pause/Stop` en header del editor conectados al runtime/store.
+- 2026-03-08: Validación técnica post-cambio: `pnpm run lint`, `pnpm run typecheck` y `pnpm run build` en verde.
+- TODO: Fase 3 - implementar Scrib Core real (`ScribManifest`, `ScribRegistry`, recipes, assign system) para reemplazar flujo temporal de scripts.
+- 2026-03-08: Fase 3 implementada (Scrib Core): nuevo modulo `src/engine/scrib` con `types.ts`, `registry.ts`, `assign.ts` e `index.ts`.
+- 2026-03-08: `ScribRegistry` funcional con `register/get/list/validate`, catálogo atomic y recipes compuestas (`characterBasic`, `enemyBasic`, `terrainBasic`, `weaponBasic`, `doorBasic`, `vehicleBasic`).
+- 2026-03-08: `AssignSystem` funcional para asignar scribs a `entity` o `scene`, con auto-add de dependencias y utilidades de consulta/eliminación.
+- 2026-03-08: `editorStore` extendido con `scribInstances` + acciones `assignScribToEntity`, `assignScribToScene`, `deleteScribInstance`, limpieza automática al borrar entidad/escena y soporte undo/redo para scrib instances.
+- 2026-03-08: `runReyPlayCompile` y `buildReyPlayManifest` ahora consideran `scribInstances`; compilación valida targets, tipos, dependencias y duplicados de scrib por target.
+- 2026-03-08: `ScriptWorkspacePanel` ya permite asignar capacidades scrib atomic a la entidad seleccionada y muestra scribs activos por entidad.
+- 2026-03-08: `HybridSceneSystemPanel` y `ReyPlayStudioPanel` conectados al nuevo assign system para crear/registrar scribs reales.
+- 2026-03-08: Validación completa post-fase: `pnpm run lint`, `pnpm run typecheck` y `pnpm run build` en verde.
+- TODO: Fase 4 - Composer System + Runtime plan order + hot reload de scrib por guardado (sin reiniciar escena).
+- 2026-03-08: Fase 4 implementada (Composer + Runtime + Hot Reload). Nuevo `Composer System` en `src/engine/scrib/composer.ts` con etapas: collect_entities, collect_scribs, validate, resolve_dependencies, build_runtime, init_scene, start_loop, render.
+- 2026-03-08: Composer resuelve dependencias con auto-add virtual por target cuando falta capability requerida y ordena ejecución por prioridad atómica.
+- 2026-03-08: `ScriptRuntime` refactorizado a runtime unificado (`legacy Script component + Scrib composer nodes`) con sandbox por nodo (`try/catch`, disable automático de scrib defectuoso) y recálculo de plan por firma.
+- 2026-03-08: Hot reload end-to-end agregado: `ScriptWorkspacePanel` emite `scrib:code-updated` al guardar, runtime invalida cache y recarga script/scrib sin reiniciar escena.
+- 2026-03-08: Store ampliado con `setScribInstanceEnabled` para kill-switch de scrib cuando falla ejecución.
+- 2026-03-08: Validación post-fase en verde: `pnpm run lint`, `pnpm run typecheck`, `pnpm run build`.
+- TODO: Fase 5 - reemplazar `ScriptWorkspacePanel` por `Scrib Studio` completo con tabs `Create/Assign/Edit/Library/Console` + Monaco/CodeMirror.
+- 2026-03-08: Fase 5 implementada: `ScriptWorkspacePanel` migrado a `Scrib Studio` completo con tabs `Create`, `Assign`, `Edit`, `Library`, `Console`.
+- 2026-03-08: Tab `Create` implementa flujo 4 pasos (target type -> capability -> config -> save) para entity/scene usando assign system real.
+- 2026-03-08: Tab `Assign` implementa UI doble panel (scene tree + capabilities) con asignación directa de scrib por target y config.
+- 2026-03-08: Tab `Edit` implementa operaciones de archivo real: open, edit, save, duplicate, delete, reload y compile para scripts; incluye bind a entidad.
+- 2026-03-08: Tab `Library` implementa catálogo de scribs atomic/recipes con filtro y asignación rápida a entity/scene.
+- 2026-03-08: Tab `Console` implementa comandos `help`, `listScribs()`, `createScrib({...})` con parser JSON flexible y ejecución real de assign.
+- 2026-03-08: Se agregó auto-creación de archivos `scribs/*.scrib.ts` (plantilla editable) al asignar capacidades para garantizar edición de código real.
+- 2026-03-08: Hot reload mantenido: guardar/borrar scripts en Scrib Studio emite `scrib:code-updated` para recarga en runtime sin reiniciar escena.
+- 2026-03-08: Validación post-fase en verde (`lint`, `typecheck`, `build`).
+- TODO: Fase 6 - endurecer pipeline específico por modo (Manual/Hybrid/AI First) para que AI First use solo chat+orquestador y Manual/Hybrid expongan Scrib Studio avanzado según perfil.
+- 2026-03-08: Fase 6 implementada (pipelines por modo). `AIChatPanel` ahora aplica reglas estrictas por `engineMode`: en `MODE_MANUAL` no ejecuta pipeline automático, en `MODE_HYBRID` mantiene asistido IA+edición, y en `MODE_AI_FIRST` fuerza prompt único -> orquestador end-to-end.
+- 2026-03-08: `runOrchestratedPipeline` reforzado para AI First con base de escena forzada cuando aplica, etapas de entidades/gameplay automáticas, y cierre con validación de contrato AI (`Scene + Entities + Scribs`) + `runReyPlayCompile()` para confirmar composer/runtime compartido.
+- 2026-03-08: `HybridSceneSystemPanel` sincronizado con `engineMode` global (sin estado local desalineado); los botones Manual/Híbrido/AI-first ahora cambian `setEngineMode` como fuente única de verdad.
+- 2026-03-08: Validación post-Fase 6 en verde: `pnpm run lint`, `pnpm run typecheck`, `pnpm run build`.
+- TODO: Fase 7 - autenticación + BYOK por usuario + cifrado de claves + sandbox de ejecución de scrib para publicación segura multiusuario.
+- 2026-03-08: Fase 7 implementada (seguridad multiusuario + BYOK). Se agregaron modelos Prisma: `UserRole`, `AuthSession`, `ApiCredential`, `UserApiSettings` y `SecurityAuditLog` para autenticar usuario, guardar claves cifradas por cuenta y auditar eventos.
+- 2026-03-08: Nueva capa de seguridad en `src/lib/security/*`: cifrado AES-GCM (`crypto.ts`), hashing de contraseñas con scrypt (`password.ts`), sesiones HTTP-only + RBAC + auditoría (`auth.ts`), y servicio de configuración API por usuario (`user-api-config.ts`).
+- 2026-03-08: Nuevas rutas de autenticación: `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/session`.
+- 2026-03-08: Nuevas rutas de cuenta y seguridad: `GET/PUT /api/user/api-config` (BYOK por usuario, sin exponer secretos) y `GET /api/user/security-logs` (OWNER/EDITOR).
+- 2026-03-08: Proveedores cloud migrados a BYOK autenticado (sin `.env` global): `/api/openai`, `/api/meshy`, `/api/runway` ahora resuelven credenciales desde la cuenta autenticada y registran uso/auditoría.
+- 2026-03-08: `api/ai-chat` reescrito para usar routing per-user (OpenAI o local provider) con sesión obligatoria y respuesta unificada para `AIChatPanel`.
+- 2026-03-08: `SettingsPanel` migrado a `Usuario / Config APIs`: login/register/logout, estado de rol (OWNER/EDITOR/VIEWER), guardado server-side cifrado, indicadores de secretos guardados y visualización de logs de seguridad para roles altos.
+- 2026-03-08: `api-config.ts` y `local-ai-config.ts` endurecidos para cliente: ya no persisten API keys en `localStorage` (solo configuración no sensible).
+- 2026-03-08: Sandbox de scrib reforzado en `ScriptRuntime`: bloqueo de patrones peligrosos (`window/document/storage/network/eval/new Function/process`), ejecución en wrapper restringido, límite de tiempo por ejecución y límite de tamaño de config con auto-disable del scrib al violar políticas.
+- 2026-03-08: Validación post-Fase 7 en verde: `pnpm run typecheck`, `pnpm run lint`, `pnpm run build`.
+- 2026-03-08: `prisma db push` requiere `DATABASE_URL` y en este workspace con `#` devolvió `Schema engine error`; se recomienda ejecutar push/migración desde workspace seguro sin `#` o con variable `DATABASE_URL` definida en entorno estable.
+- TODO: Ejecutar migración/push de Prisma en workspace seguro y validar flujo end-to-end de registro/login + guardado BYOK + generación AI con sesión activa.
+- 2026-03-08: Error anterior corregido para pruebas en path con `#`: `scripts/vitest-safe.mjs` ahora ejecuta `pnpm exec prisma generate` en workspace sombra antes de correr Vitest, evitando `Cannot find module '.prisma/client/default'`.
+- 2026-03-08: Fase 8 cerrada (release hardening): `test:unit`, `test:integration`, `test:e2e`, `test:release` y `release:check` en verde; checklist y budgets documentados en `docs/RELEASE_HARDENING_PHASE8.md`.
+- 2026-03-08: Fase 9 implementada (go-live). Se añadieron endpoints operativos `GET /api/health/live` y `GET /api/health/ready` con metadata de release y verificación de base de datos.
+- 2026-03-08: Observabilidad base agregada en `src/lib/ops/release-info.ts` (service/version/commit/environment/uptime).
+- 2026-03-08: Smoke post-deploy automatizado con `scripts/postdeploy-smoke.mjs` + script npm `smoke:postdeploy`, incluyendo reporte JSON y checks de rutas críticas.
+- 2026-03-08: Rollback automatizado por webhook implementado con `scripts/trigger-rollback.mjs` + script npm `rollback:trigger`.
+- 2026-03-08: CI/CD agregado en `.github/workflows/ci-quality-gate.yml` y `.github/workflows/postdeploy-smoke-rollback.yml` (quality gate + smoke + rollback automático).
+- 2026-03-08: Runbook operativo de fase documentado en `docs/GO_LIVE_PHASE9.md`.
+- 2026-03-08: Fase 10 implementada (observabilidad avanzada): nuevos endpoints `/api/ops/slo`, `/api/ops/alerts` y `/api/ops/metrics` con autorización por sesión o token `REY30_OPS_TOKEN`.
+- 2026-03-08: `engineTelemetry` extendido con SLO snapshots, cálculo de burn rate/error budget y export Prometheus (`toPrometheusMetrics`).
+- 2026-03-08: Seguridad operativa añadida en `src/lib/security/ops-token.ts` (token compare seguro con timing-safe-equal).
+- 2026-03-08: Integración de monitoreo continuo: script `monitor:slo`, script `alert:trigger` y workflow programado `.github/workflows/slo-monitor.yml` con alerta webhook opcional.
+- 2026-03-08: Cobertura de pruebas ampliada con `tests/integration/ops-observability.test.ts` y mejoras en `tests/unit/telemetry.test.ts`.
+- 2026-03-08: Fase 10 documentada en `docs/OBSERVABILITY_PHASE10.md`.
+- 2026-03-08: Fase 11 implementada (backup/restore programado y validado): servicio central `src/lib/ops/backup-service.ts` con create/list/verify/restore para DB + scripts + galería.
+- 2026-03-08: APIs nuevas de backup operativo: `GET/POST /api/ops/backups`, `POST /api/ops/backups/verify`, `POST /api/ops/backups/restore` con autorización OWNER o `REY30_OPS_TOKEN`.
+- 2026-03-08: Cliente remoto agregado `scripts/ops-backup-client.mjs` + scripts npm `backup:*:remote`.
+- 2026-03-08: Drill automático agregado en `.github/workflows/backup-restore-drill.yml` (crear, verificar, restore dry-run, artifacts, alerta opcional).
+- 2026-03-08: Seguridad de ops token endurecida en `src/lib/security/ops-token.ts` con fallback de pruebas y comparación timing-safe.
+- 2026-03-08: Cobertura de integración añadida en `tests/integration/ops-backup.test.ts` validando create+verify+dry-run+restore real en entorno temporal.
+- 2026-03-08: Fase 11 documentada en `docs/BACKUP_RESTORE_PHASE11.md`.
+- 2026-03-08: Fase 12 implementada (carga/capacidad + límites por modo/usuario). `proxy.ts` ahora aplica rate-limit específico en `/api/ai-chat` segmentado por sesión/IP + `engineMode`.
+- 2026-03-08: Política de capacidad centralizada en `src/lib/security/capacity-policy.ts` con variables por modo (`MANUAL`, `HYBRID`, `AI_FIRST`).
+- 2026-03-08: Endpoint operacional agregado `GET /api/ops/capacity` (OWNER o token ops) para auditar límites activos.
+- 2026-03-08: `AIChatPanel` actualizado para enviar header `x-rey30-engine-mode` y mostrar mensaje claro cuando recibe `429`.
+- 2026-03-08: Script de carga agregado `scripts/load-capacity.mjs` + script npm `capacity:load`.
+- 2026-03-08: Workflow programado `.github/workflows/capacity-load-test.yml` agregado (throughput health + validación de limitación AI First).
+- 2026-03-08: Cobertura de integración añadida en `tests/integration/capacity-limits.test.ts` para validar política y enforcement de límites por modo.
+- 2026-03-08: Fase 12 documentada en `docs/CAPACITY_PHASE12.md`.
+- 2026-03-08: Fase 14 implementada (gobernanza de costos/cuotas): nuevos modelos Prisma `UserUsagePolicy` y `ProviderUsageLedger` para presupuesto mensual y ledger por proveedor/período.
+- 2026-03-08: Nueva capa `src/lib/security/usage-governance.ts` con `assertUsageAllowed`, `recordUsage`, `getUsageSummary`, `getUsageAlerts` y estimación de costo por acción/proveedor.
+- 2026-03-08: Enforcement de cuotas integrado en `/api/ai-chat`, `/api/openai`, `/api/meshy` y `/api/runway`; cuando excede presupuesto responde `429` (`USAGE_LIMIT_EXCEEDED`).
+- 2026-03-08: Endpoints de usuario agregados: `GET/PUT /api/user/usage-policy` y `GET /api/user/usage-summary`.
+- 2026-03-08: Endpoint operativo agregado: `GET /api/ops/usage/alerts` (OWNER o `REY30_OPS_TOKEN`).
+- 2026-03-08: Script `scripts/check-usage-alerts.mjs` + npm script `usage:alerts` + workflow programado `.github/workflows/usage-budget-monitor.yml`.
+- 2026-03-08: Cobertura adicional en `tests/unit/usage-governance.test.ts` y `tests/integration/usage-routes.test.ts`.
+- 2026-03-08: Fase 14 documentada en `docs/USAGE_GOVERNANCE_PHASE14.md`.
+- 2026-03-08: Fase 15 implementada (FinOps UX): nuevo endpoint `GET /api/user/usage-insights` con tendencia mensual, proyección de cierre y recomendaciones automáticas.
+- 2026-03-08: `src/lib/security/usage-governance.ts` extendido con tipos `UsageInsights` (`UsageTrendPoint`, `UsageRecommendation`) y funciones `getUsageInsights` + `generateUsageRecommendations`.
+- 2026-03-08: `SettingsPanel` ahora incluye pestaña `Uso/Costos` con componente `UsageFinOpsPanel` (dashboard visual, breakdown por proveedor y edición de política de gasto).
+- 2026-03-08: Cobertura actualizada: integración de acceso anónimo a `usage-insights` en `tests/integration/usage-routes.test.ts` y recomendaciones FinOps en `tests/unit/usage-governance.test.ts`.
+- 2026-03-08: Fase 15 documentada en `docs/FINOPS_PHASE15.md`.
+- 2026-03-08: Fase 16 implementada (FinOps operativo avanzado): nuevos modelos Prisma `ProjectUsageLedger`, `UserUsageAlertProfile` y `ProjectUsageGoal`.
+- 2026-03-08: Nuevo servicio `src/lib/security/usage-finops.ts` con alertas personalizadas, objetivos por proyecto, snapshot FinOps y export CSV.
+- 2026-03-08: Nuevos endpoints `GET/PUT /api/user/usage-finops` y `GET /api/user/usage-export` (csv/json) para operación FinOps por usuario.
+- 2026-03-08: Rutas de proveedor conectadas a costo por proyecto vía header `x-rey30-project` (`/api/ai-chat`, `/api/openai`, `/api/meshy`, `/api/runway`).
+- 2026-03-08: `AIChatPanel` ahora envía contexto de proyecto del editor (`projectName`) como `x-rey30-project` para trazabilidad de consumo por proyecto.
+- 2026-03-08: `UsageFinOpsPanel` actualizado para guardar perfil de alertas, mostrar costos por proyecto y exportar CSV.
+- 2026-03-08: Cobertura añadida: `tests/unit/usage-finops.test.ts` + ampliación de `tests/integration/usage-routes.test.ts` para nuevas rutas.
+- 2026-03-08: Fase 16 documentada en `docs/FINOPS_PHASE16.md`.
+- 2026-03-08: Fase 17 implementada (FinOps governance empresarial): nuevo modelo Prisma `BudgetApprovalRequest` + enum `BudgetApprovalStatus`.
+- 2026-03-08: `src/lib/security/usage-finops.ts` extendido con workflow de aprobación (`create/get/decide`) y reporte consolidado (`getEnterpriseFinOpsReport`).
+- 2026-03-08: Nuevas rutas: `GET/POST /api/user/budget-approvals`, `GET /api/ops/usage/approvals`, `POST /api/ops/usage/approvals/[requestId]/decision` y `GET /api/ops/usage/enterprise`.
+- 2026-03-08: `UsageFinOpsPanel` actualizado con solicitud de aprobación por usuario, historial de solicitudes y cola de decisión para rol `OWNER`.
+- 2026-03-08: Monitoreo programado agregado con `scripts/monitor-finops-enterprise.mjs`, script npm `usage:enterprise` y workflow `.github/workflows/finops-enterprise-monitor.yml`.
+- 2026-03-08: Cobertura de integración ampliada en `tests/integration/usage-routes.test.ts` para rutas enterprise y bloqueo anónimo de `budget-approvals`.
+- 2026-03-08: Fase 17 documentada en `docs/FINOPS_PHASE17.md`.
+- 2026-03-08: Validación de cierre fase 17 en verde: `lint`, `typecheck`, `test:unit`, `test:integration`, `build`.
+- 2026-03-08: Fase 18 implementada (FinOps autopilot): nuevos modelos Prisma `UserFinOpsAutopilot` y `BudgetApprovalPolicy`.
+- 2026-03-08: `src/lib/security/usage-finops.ts` extendido con `get/saveBudgetApprovalPolicies`, `get/saveUserFinOpsAutopilotConfig`, `getUserFinOpsAutopilotSnapshot` y `getEnterpriseFinOpsIncidentReport`.
+- 2026-03-08: `createBudgetApprovalRequest` ahora evalúa policy por rol/proyecto y aplica auto-approve cuando corresponde.
+- 2026-03-08: Nuevas rutas: `GET/PUT /api/user/usage-autopilot`, `GET/PUT /api/ops/usage/policies` y `GET /api/ops/usage/incidents`.
+- 2026-03-08: `UsageFinOpsPanel` actualizado con módulo autopilot (seasonality + budget suggestion), auto-triage de incidentes y editor owner de policies.
+- 2026-03-08: `monitor-finops-enterprise` mejorado con lectura de incidentes y nueva política `fail-on-high`; workflow enterprise actualizado.
+- 2026-03-08: Scripts npm agregados/actualizados: `usage:enterprise` y `usage:incidents`.
+- 2026-03-08: Cobertura de integración ampliada para `usage-autopilot`, `usage-incidents` y `usage-policies` (GET/PUT).
+- 2026-03-08: Fase 18 documentada en `docs/FINOPS_PHASE18.md`.
+- 2026-03-08: Validación de cierre fase 18 en verde: `db:push`, `db:generate`, `lint`, `typecheck`, `test:unit`, `test:integration`, `build`.
+- 2026-03-08: Fase 19 implementada (FinOps closed-loop): nuevos modelos Prisma `FinOpsAutomationControl`, `FinOpsRemediationLog` y enum `FinOpsRemediationStatus`.
+- 2026-03-08: `src/lib/security/usage-finops.ts` extendido con `get/saveFinOpsAutomationControl`, `getFinOpsRemediationLogs` y `runFinOpsClosedLoop`.
+- 2026-03-08: Closed-loop agrega acciones automáticas seguras: `enforce_hard_stop`, `tighten_provider_budget`, `create_project_guardrail`, `harden_approval_policy`.
+- 2026-03-08: Guardrails operativos incorporados: ventana UTC, severidad mínima, cooldown por acción/usuario y límite de acciones por corrida.
+- 2026-03-08: Nuevas rutas ops: `GET/PUT /api/ops/usage/automation-control`, `POST /api/ops/usage/closed-loop`, `GET /api/ops/usage/closed-loop/logs`.
+- 2026-03-08: Script de ejecución remota agregado `scripts/run-finops-closed-loop.mjs` + scripts npm `usage:closed-loop:dry` y `usage:closed-loop:apply`.
+- 2026-03-08: Workflow programado agregado `.github/workflows/finops-closed-loop.yml`.
+- 2026-03-08: `UsageFinOpsPanel` actualizado con control owner de closed-loop, ejecución dry/apply y visualización de logs de remediación.
+- 2026-03-08: Cobertura de integración ampliada para automation-control, closed-loop run y closed-loop logs en `tests/integration/usage-routes.test.ts`.
+- 2026-03-08: Fase 19 documentada en `docs/FINOPS_PHASE19.md`.
+- 2026-03-08: Validación de cierre fase 19 en verde: `db:push`, `db:generate`, `lint`, `typecheck`, `test:unit`, `test:integration`, `build`.
+- TODO: Fase siguiente recomendada: 20) FinOps policy intelligence (simulación de impacto antes de aplicar cambios + aprobación humana asistida por riesgo).
+- 2026-03-08: Hardening de registro aplicado en /api/auth/register: nuevo modo configurable de alta (`REY30_REGISTRATION_MODE`: open/invite_only/allowlist), soporte de `inviteToken`, allowlist opcional por email y rol inicial reducido a `VIEWER` (bootstrap owner conservado con token).
+- 2026-03-08: Registro ahora usa transacción con reintento (evita carrera find+create en altas concurrentes) y mantiene respuesta 409 para correo existente.
+- 2026-03-08: Rate limit migrado en `proxy.ts` a backend distribuido Upstash Redis (si `UPSTASH_REDIS_REST_URL/TOKEN` existen) con TTL real por ventana; fallback automático a store en memoria para local/tests.
+- 2026-03-08: Endurecido fetch remoto para proveedores AI con util `src/lib/security/remote-fetch.ts`: allowlist por proveedor + allowlist env, bloqueo de IP privadas/link-local/IPv6 privada, timeout y límite de tamaño de respuesta.
+- 2026-03-08: Errores públicos sanitizados en rutas AI (`/api/ai-chat`, `/api/openai`, `/api/meshy`, `/api/runway`, `/api/ollama`, `/api/vllm`, `/api/llamacpp`) con `correlationId` y sin campo `details`; logging interno ahora referencia el mismo ID.
+- 2026-03-08: UX Scrib mejorada: `ScriptWorkspacePanel` agrega acciones explícitas `usar en entidad` y `usar en escena` para `*.scrib.ts`, muestra `scrib detectado` y mejora contraste en botones de acción.
+- 2026-03-08: Ajuste visual en SceneView: botones de gizmo ahora tienen etiqueta visible (`Mover`, `Rotar`, `Escala`) y estilo más legible (ya no solo icono azul/blanco).
+- 2026-03-08: SettingsPanel auth ajustado para nuevos flujos: botones de modo auth con contraste mejorado + input opcional de token de invitación al registrar.
+- 2026-03-08: Validación técnica: `pnpm exec tsc --noEmit` en verde; integración validada con `node scripts/vitest-safe.mjs run ...` (13 tests OK).
+- 2026-03-08: Validación Playwright (`develop-web-game`) ejecutada en shadow workspace sin `#`; screenshot capturado en `C:\Users\rey30\AppData\Local\REY30_shadow_tests\REY30_3dengine__\output\web-game\shot-0.png`. Quedó registrado error de runtime heredado que aún referencia ruta original con `#` en `errors-0.json` (afecta render estable si el entorno apunta al workspace con `#`).
+- 2026-03-09: P2 de hardening de sandbox aplicado: nueva instrumentación de guardas de ejecución para loops (`src/engine/gameplay/script-guard.ts`) y ejecución protegida por presupuesto de tiempo/ticks en `ScriptRuntime` para scripts scrib y legacy.
+- 2026-03-09: Sandbox AST endurecido en `src/engine/gameplay/script-sandbox.ts`: bloqueo de acceso dinámico `obj[key]` (excepto índice numérico) y reserva de identificadores internos del runtime.
+- 2026-03-09: Cobertura ampliada con `tests/unit/script-guard.test.ts` y nuevos casos en `tests/unit/script-sandbox.test.ts`; validación completa en verde con `lint`, `typecheck` y `test` (17 files / 49 tests).
+- 2026-03-09: P3 de hardening de sandbox aplicado: bloqueo explícito de `import()` dinámico e `import.meta`, y protección de bypass por optional chaining (`?.constructor`) en `src/engine/gameplay/script-sandbox.ts`.
+- 2026-03-09: Cobertura P3 añadida en `tests/unit/script-sandbox.test.ts` (optional chain, dynamic import, import.meta); validación en verde con `lint`, `typecheck` y `test` (17 files / 52 tests).
+- 2026-03-09: P4 implementado al 100% (CSRF): nuevo módulo `src/lib/security/csrf.ts` (token, cookie, validación header+cookie), enforcement en `src/proxy.ts` para mutaciones autenticadas y emisión/rotación de cookie CSRF desde auth/session.
+- 2026-03-09: Cliente endurecido con interceptor global `fetch` en `src/lib/security/csrf-client.ts`, activado desde `EditorLayout`, para adjuntar `x-rey30-csrf` automáticamente en mutaciones same-origin.
+- 2026-03-09: Cobertura de pruebas añadida con `tests/unit/csrf.test.ts` y `tests/integration/csrf-proxy.test.ts`; validación completa en verde (`lint`, `typecheck`, `test`: 19 files / 60 tests).
+- 2026-03-09: Validación final P4 en modo release: `pnpm run build` completó en verde (Next.js build + rutas API/proxy).
+- 2026-03-10: Forense UI/API aplicado: `ScriptWorkspacePanel` ahora valida sesión (`/api/auth/session`) antes de consumir `/api/scripts`, muestra banner de acceso y deja de disparar llamadas anónimas en bucle (`401`).
+- 2026-03-10: Robustez de pruebas: `tests/integration/auth-api.test.ts` y `tests/integration/usage-routes.test.ts` ahora aíslan variables de entorno sensibles (`REY30_REGISTRATION_MODE`, `REY30_REGISTRATION_INVITE_TOKEN`, `REY30_OPS_TOKEN`) para evitar falsos negativos por entorno local.
+- 2026-03-10: Rendimiento de escena mejorado para evitar “freeze” en interacción: se agregó `updateEntityTransient` al store y se usa en drag/runtime (`useSceneViewEntityActions`, `useSceneViewPointerInteractions`, `ScriptRuntime`) para no empujar historial en cada frame.
+- 2026-03-10: Contraste visual mejorado globalmente: variante `outline` de `Button` ahora define `text-foreground` explícito.
+- 2026-03-10: UX AI clarificada: `AIChatPanel` muestra aviso explícito cuando workflow está en `MODE_MANUAL` y agrega acción directa para cambiar a `MODE_HYBRID` + `AI API`.
+- 2026-03-10: Validación técnica en verde: `pnpm run typecheck`, `pnpm run lint`, `pnpm exec vitest run tests/integration` (9 files / 33 tests) OK.
+- 2026-03-10: Validación visual con skill `develop-web-game` (Playwright client) sobre `http://localhost:3000`; capturas `output/web-game-forensic/shot-0.png` y `shot-1.png` confirman incremento de `Objects` (2 -> 3) al usar `+ Cubo`.
+- TODO: Ejecutar validación manual autenticada de flujo `Scrib Studio` completo (listar/abrir/guardar/compilar) con usuario `EDITOR` para confirmar UX end-to-end en entorno real de usuario.
+- TODO: Considerar throttling adicional de sync de transform durante drag para reducir renders React en escenas con cientos de entidades.
+- 2026-03-11: Forense + fix runtime/UI aplicado para bloqueo de escena: `AssetBrowserPanel` ahora valida sesion (`/api/auth/session`) antes de llamar `/api/assets`, evita bucles `401` anonimos y sincroniza assets al store sin empujar historial por cada item.
+- 2026-03-11: `ScriptRuntime` endurecido contra spam de carga: backoff por script, cooldown de warnings y bloqueo temporal global en fallos `401/403`; ya no reintenta `/api/scripts` cada frame cuando no hay sesion.
+- 2026-03-11: `useSceneViewSetup` reforzado para evitar fuga de WebGL contexts: guard de init unico, limpieza de canvas stale, dispose completo de controles/escena/renderer + `forceContextLoss` y reset seguro de timer.
+- 2026-03-11: Validacion tecnica en verde tras fix: `pnpm run typecheck`, `pnpm run lint`, `pnpm exec vitest run tests/integration/auth-api.test.ts tests/integration/usage-routes.test.ts`.
+- 2026-03-11: Validacion visual/funcional con skill `develop-web-game` ejecutada en `http://localhost:3000`; screenshot `output/web-game-forensic-fix/shot-0.png` muestra viewport activo y boton `+ Cubo` funcional, sin archivo `errors-0.json`.
+- TODO: Validar manualmente login real (OWNER/EDITOR) y confirmar que `Assets` y `Scrib` cargan datos autenticados en una sesion persistente del usuario final.
+- TODO: Si persiste sensacion de freeze en equipos lentos, añadir throttle opcional al loop de `ScriptRuntime` para scripts legacy con alto costo por frame.
+- 2026-03-11: Diagnostico auth UI: `403` en register confirmado por politica por defecto (`REY30_REGISTRATION_MODE` no definido -> `invite_only`) y `500` en login confirmado por SQLite inaccesible (`DATABASE_URL` apuntaba a ruta relativa incorrecta).
+- 2026-03-11: `.env.local` corregido para entorno local: `DATABASE_URL=file:./prisma/dev.db` (resuelve a `prisma/prisma/dev.db` desde schema) + `REY30_REGISTRATION_MODE=open` + `REY30_ALLOW_OPEN_REGISTRATION_REMOTE=false` para permitir registro local sin token.
+- 2026-03-11: Verificacion real post-fix: `POST /api/auth/register` = 200 y `POST /api/auth/login` = 200 con cuentas de prueba; sin errores en `dev-server.err`.
+- TODO: Antes de producción, volver a `REY30_REGISTRATION_MODE=invite_only`, definir `REY30_REGISTRATION_INVITE_TOKEN` y mantener `REY30_ALLOW_OPEN_REGISTRATION_REMOTE=false`.
+- 2026-03-11: `api/auth/register` actualizado para DX local: si `REY30_REGISTRATION_MODE` no está definido y `NODE_ENV=development`, el backend ahora usa `open` por defecto (sin token) en local.
+- 2026-03-11: Validado que la suite de auth integración sigue en verde (`tests/integration/auth-api.test.ts`, 7/7).
+- 2026-03-11: Token rápido generado para modo invitación (futuro): `REY30_REGISTRATION_INVITE_TOKEN` definido en `.env.local`. El modo actual local se mantiene `open`, por lo que no se exige token para registrar.
+- 2026-03-11: Root cause de `Registro deshabilitado o requiere invitacion`: `start-clean-app.bat` forzaba `REY30_REGISTRATION_MODE=invite_only` en auto bootstrap, pisando `.env.local`.
+- 2026-03-11: Fix aplicado en `start-clean-app.bat`: fallback local cambiado a `REY30_REGISTRATION_MODE=open`.
+- 2026-03-11: Verificado en logs de servidor: `POST /api/auth/register` responde `200` tras fix.
+- 2026-03-11: Perfil A (procedural+rig) implementado en `mini-services/character-backend` con API de jobs (`POST /v1/character/jobs`, `GET /v1/character/jobs/{id}`, `GET /v1/character/jobs/{id}/result`, `GET /healthz`).
+- 2026-03-11: `POST /api/character/full` ahora soporta backend remoto por env (`REY30_CHARACTER_BACKEND_URL`) con fallback local automático si falla el servicio.
+- 2026-03-11: `.env.local` actualizado con defaults de Profile A (`REY30_CHARACTER_BACKEND_URL`, `REY30_CHARACTER_BACKEND_TIMEOUT_MS`, `REY30_CHARACTER_BACKEND_POLL_MS`).
+- 2026-03-11: `start-clean-app.bat` actualizado para iniciar/parar backend Profile A automáticamente (flags `--character-backend`, `--no-character-backend`, `--character-port`) con logs en `output/character-backend.log`.
+- 2026-03-11: Nuevas rutas proxy para jobs de personaje: `POST/GET /api/character/jobs` y `GET /api/character/jobs/result`, con sesión requerida y passthrough al backend Profile A.
+- 2026-03-11: `AIChatPanel`/`useAIAssetActions` ahora muestran progreso real de personaje (`queued/running/completed/failed`) con etapa actual en la barra, usando polling de `jobId`.
+- 2026-03-11: `/api/character/full` acepta `remoteJobId` para importar/persistir resultado de un job existente sin regenerar doble.
+- 2026-03-11: Hardening adicional de runtime scripts: `ScriptRuntime` ahora normaliza IDs `/scripts/...` a paths relativos antes de cargar, evitando rutas inválidas y errores repetidos por prefijo duplicado.
+- 2026-03-11: Backoff inteligente para fallos de `/api/scripts` con `HTTP 5xx`: pausa global corta + retry progresivo por script para evitar request storms y sensación de freeze.
+- 2026-03-11: UX de Scrib Studio aclarada en tabs `Create/Assign/Edit` con hints explícitos de JSON config y ubicación del código activo, reduciendo confusión de “dónde va el scrib”.
+
+- 2026-03-11: Scroll UI robustecido: src/components/ui/scroll-area.tsx ahora expone ref al viewport real, habilita barras vertical+horizontal visibles y mejora interacción con rueda.
+- 2026-03-11: AIChatPanel corregido con barra de movimiento del chat, autoscroll sobre viewport real y cache de disponibilidad de /api/scripts para evitar spam de errores 403 al generar scripts sin sesión.
+- 2026-03-11: Pipeline de juego mejorado para prompts de plataformas: crea layout de plataformas y detecta/enlista enemigo lobo (lobo/wolf) en creación automática.
+- 2026-03-11: ScriptWorkspacePanel ahora acepta código TS/JS pegado directo en consola (incluyendo formato // Archivo.ts ...) y lo guarda como script en vez de intentar parsearlo como JSON.
+- 2026-03-11: ConsolePanel y TerminalPanel mejorados con autoscroll controlado, detección de posición (arriba/abajo) y acción Ir al final para no perder el último log.
+
+- 2026-03-11: Smoke visual E2E ejecutado en vivo (output/ai-flow-smoke/report.json): pipeline AI First para prompt 'plataformas + lobo + salto' completado, chat scroll verificado con rueda (sube/baja), barra de movimiento del chat verificada y consola Hybrid con overflow/scroll verificado.
+- 2026-03-11: Evidencias generadas: output/ai-flow-smoke/ai-first-after-pipeline.png, output/ai-flow-smoke/hybrid-console-after-logs.png, output/ai-flow-smoke/chat-viewport.png, output/ai-flow-smoke/hybrid-console-viewport.png.
+- 2026-03-11: Cliente oficial de skill (web_game_playwright_client) ejecutado en output/ai-flow-smoke/web-game-client; captura shot-0.png obtenida (pantalla de carga).
+- 2026-03-11: Persisten errores de red 401 en consola durante pruebas (sesión no autenticada para endpoints protegidos), sin bloquear pipeline ni validación de scroll.
+
+- 2026-03-11: Auth fix local/dev aplicado: nuevos registros en localhost se crean con rol OWNER por defecto (REY30_DEV_AUTO_OWNER no false) y login local/dev promueve cuentas no-owner a OWNER automáticamente.
+- 2026-03-11: SettingsPanel actualizado con aviso explícito de permisos OWNER en registro local/dev.
+- 2026-03-12: Fase 2 de corrección estructural implementada para escena/jerarquía/viewport. Nuevo helper `src/store/sceneGraph.ts` materializa el scene graph, normaliza `rootEntities`, recompone `children` y unifica store, hierarchy, viewport y compile sobre la escena activa.
+- 2026-03-12: `projectSlice` ahora hace de fuente única de verdad para membresía de escenas: `addEntity`, `updateEntity`, `updateEntityTransient`, `removeEntity` y `deleteScene` sincronizan `scenes`, `entities`, selección y scrib cleanup sin mutaciones manuales duplicadas.
+- 2026-03-12: Mutaciones duplicadas removidas de `AIOrchestrator`, `SceneEntityTools` y `GeneratorTools`; el runtime/editor ya no vuelve a insertar entidades por fuera del store.
+- 2026-03-12: `HierarchyPanel`, `SceneView` y `useSceneEntitySync` quedaron recableados a la escena activa materializada; el viewport ahora respeta parenting real en Three.js y el contador de objetos refleja la escena activa.
+- 2026-03-12: `buildReyPlayManifest` corregido para contar entidades únicas por escena y usar roots normalizados.
+- 2026-03-12: Pruebas nuevas agregadas en `tests/unit/scene-graph.test.ts` para descendencia, materialización, expansión de membresía y conteo único en manifest.
+- 2026-03-12: Perfil semi-productivo local implementado: `scripts/start-semi-production-local.mjs`, `scripts/https-local-proxy.mjs`, script npm `start:semi-production:local`, certificado local autogenerado y smoke automático HTTPS sobre `https://localhost:8443`. En 2026-03-17 el wrapper batch dedicado fue retirado y el acceso quedó unificado en `start-clean-app.bat --semi-production-local`.
+- 2026-03-12: `scripts/postdeploy-smoke.mjs` ahora soporta `--allow-self-signed`; `.env.production` y docs de arranque actualizados para HTTPS local.
+- 2026-03-12: Hardening colateral en `POST /api/ops/backups`: errores de auth ya no caen como `500`; `tests/integration/ops-backup.test.ts` quedó aislado del entorno con `REY30_OPS_TOKEN` explícito.
+- 2026-03-12: Validación real completada: `pnpm run typecheck`, `pnpm run lint` (solo warning preexistente en `scripts/scribs/movement.scrib.ts`), `pnpm run build`, `tests/unit/scene-graph.test.ts`, `tests/integration/scripts-api.test.ts`, `tests/integration/auth-api.test.ts`, `tests/integration/usage-routes.test.ts`, `tests/integration/ops-backup.test.ts`.
+- 2026-03-12: Verificación semi-prod real completada con smoke HTTPS en verde; reporte en `output/semi-prod-smoke-report.json`.
+- 2026-03-12: Smoke visual adicional con skill `develop-web-game` sobre producción local completado; captura en `output/web-game-phase2/shot-0.png` confirma overlay manual y viewport cargando sin errores de consola.
+- 2026-03-12: Fase siguiente del plan nativo implementada para viewport manual. `SceneView` ahora monta `EditorToolbar` real dentro del viewport con controles funcionales de transform (`move/rotate/scale`), `world/local`, grid, snap, cámara (`persp/ortho-like/top/front/side`), luces, colliders, focus selected y reset view.
+- 2026-03-12: `useSceneEntitySync` extendido con filtros de viewport: las entidades tipo luz respetan `showLights` y los `Collider` pueden visualizarse como helpers wireframe en el viewport cuando `showColliders` está activo.
+- 2026-03-12: Interacción manual robustecida: el drag del gizmo ya usa snap por modo (`translate/rotate/scale`) y los overlays del viewport dejan de propagar clicks al canvas, evitando selecciones accidentales al usar toolbar/botones.
+- 2026-03-12: Arranque manual desde proyecto vacío corregido: `createManualEntity` ahora auto-crea `Escena Principal` si no existe escena activa, resolviendo el caso forense donde `+ Cubo/+ Esfera/+ Luz/+ Camara` no hacían nada en manual.
+- 2026-03-12: Validación técnica fase viewport en verde: `pnpm run typecheck`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`) y `pnpm run build`.
+- 2026-03-12: Validación visual fase viewport completada con producción local y Playwright. Evidencias: `output/web-game-phase3/shot-0.png` (canvas viewport), `output/phase3-fullpage.png` (toolbar + cubo creado), `output/phase3-dom-check.json` (`Objects: 1`, `CUBE Manual`, `Escena Principal`).
+- 2026-03-12: Fase `Outliner + Colecciones + navegación/cámara/world settings` implementada sobre la escena activa. `Scene` ahora soporta `collections` opcionales y `environment.ambientIntensity`; `projectSlice` agrega `updateScene` y sanea colecciones al borrar entidades.
+- 2026-03-12: `editor` ahora expone `navigationMode`, `viewportCameraMode`, `viewportFov` y `setCameraSpeed`, permitiendo controlar navegación/cámara desde UI compartida en vez de estado local aislado.
+- 2026-03-12: `HierarchyPanel` rehecho como outliner funcional con selector de escena, creación de escenas, creación/renombre/borrado de colecciones, filtro por colección, visibilidad por colección, asignación de selección a colección y badges de colección por entidad.
+- 2026-03-12: Nuevo `WorldSettingsPanel` integrado a tabs Manual/Hybrid con `World Preset`, color/intensidad ambiente, fog, navegación (`Orbit/Fly/Walk`), vista de cámara, FOV, velocidad y `Post FX` base (bloom).
+- 2026-03-12: `SceneView` ahora lee `collections` y world settings reales: la visibilidad de colecciones afecta el viewport, el ambiente/fog/exposure se reflejan en Three.js, y navegación `Fly/Walk` mueve cámara con teclado (`WASD + Space/C`) además de presets de cámara compartidos con el panel World.
+- 2026-03-12: Validación fase outliner/world en verde: `pnpm run typecheck`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`), `pnpm run build`, `pnpm exec vitest run tests/unit/scene-graph.test.ts tests/unit/scrib-core.test.ts`.
+- 2026-03-12: Evidencias visuales nuevas: `output/phase4-fullpage.png` (outliner + colecciones), `output/phase4-world-fullpage.png` (panel World), `output/phase4-dom-check.json` y `output/phase4-world-check.json`.
+- 2026-03-12: Fase siguiente implementada para viewport avanzado: `SceneView` ahora soporta snapping por eje (`Axes`), sincroniza ejes activos con gizmo/snap settings, genera entorno procedural tipo HDRI por preset, aplica `environmentIntensity`, `environmentRotation` y luz direccional por azimuth/elevation/intensity.
+- 2026-03-12: Cámara virtual conectada end-to-end: `WorldSettingsPanel` expone `Viewport Camera`, `Usar camara seleccionada`, y el viewport puede bloquearse a entidades con componente `Camera`, mostrando HUD `Virtual Camera: ...` y desactivando navegación orbital mientras está activa.
+- 2026-03-12: `WorldSettingsPanel` ampliado con controles reales de `HDRI Intensity`, `Environment Rotation`, `Primary Light` (`Intensity`, `Azimuth`, `Elevation`) y limpieza automática al volver a `Editor Camera`.
+- 2026-03-12: Hardening colateral: `useSceneViewPointerInteractions` respeta `controlsLocked` para no reactivar orbit al soltar drag/box select con cámara virtual activa; `EditorManager` viejo quedó alineado al nuevo `SnapSettings` con ejes por modo.
+- 2026-03-12: Validación fase viewport avanzada en verde: `pnpm run typecheck`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`), `pnpm run build`, `pnpm exec vitest run tests/unit/scene-graph.test.ts tests/unit/scrib-core.test.ts`.
+- 2026-03-12: Smoke visual completado con skill `develop-web-game` + Playwright dirigido. Evidencias: `output/web-game/shot-0.png`, `output/phase5-fullpage.png`, `output/phase5-axes-fullpage.png`, `output/phase5-dom-check.json`, `output/phase5-axes-check.json`. DOM confirmó `Objects: 2`, `Viewport Camera`, `HDRI Intensity`, `Environment Rotation`, `Primary Light`, `Virtual Camera: Camara Manual` y menú `Axes` (`X/Y/Z`) sin errores de consola.
+- 2026-03-11: Validación hecha: pnpm run typecheck OK + pnpm run test:integration -- tests/integration/auth-api.test.ts OK; prueba HTTP real de registro/sesión devolvió rol OWNER.
+- 2026-03-11: Auto-guía por entorno implementada con datos centrales en `src/engine/editor/autoGuide.ts` (Manual/Híbrido/AI First), incluyendo pasos y tips de copiloto por modo.
+- 2026-03-11: `SettingsPanel` amplió tabs con `Guia IA`: auto-guía contextual, guía Scrib por target/path/lenguaje/tipo, cuestionario de idioma y evaluación SQLite->SQL por fases.
+- 2026-03-11: Configuración de idioma añadida en `src/lib/ui-language-config.ts` (idioma + alcance + toggles), persistida en localStorage y guardada en `saveAll`.
+- 2026-03-11: `EditorLayout` ahora consume configuración de idioma para labels principales (modos, botones Play/Pause/Stop/Render, footer labels) con alcance configurable.
+- 2026-03-11: Scroll UX reforzado en `src/components/ui/scroll-area.tsx` (scrollbars always visible, thumb de mayor contraste) y barra de movimiento añadida también a `ConsolePanel` y `TerminalPanel`.
+- 2026-03-11: `ScriptWorkspacePanel` ahora muestra auto-guía contextual y recomendación Scrib directa en modo híbrido.
+- 2026-03-11: `AIChatPanel` muestra guía rápida contextual del modo activo junto al estado de workflow.
+- 2026-03-11: Nuevo smoke visual `scripts/ai-flow-smoke.mjs` + script npm `smoke:ai-flow`; valida cambio a AI/Hybrid, prompt plataformas+lobo+salto, scroll de chat y consola con evidencia en `output/ai-flow-smoke/report.json`.
+- 2026-03-11: Smoke skill obligatorio `web_game_playwright_client` ejecutado (capturas `output/ai-flow-smoke/web-game-client/shot-0.png`, `shot-1.png`).
+- 2026-03-11: Validación técnica post-cambios en verde: `pnpm run typecheck` + `pnpm run lint`.
+- 2026-03-12: Fase `Edit Mode / vertex-edge-face` implementada dentro del editor principal. Nuevo módulo compartido `src/engine/editor/modelerMesh.ts` centraliza primitivas editables, parseo, firma de malla y operaciones base (`moveVertices`, `extrudeFace`, `insetFace`, `subdivideFace`, `subdivideEdge`, `mirrorMeshX`, `unwrapMeshPlanar`).
+- 2026-03-12: `sceneView.visuals.ts` y `useSceneEntitySync.ts` ahora reconstruyen geometría Three.js a partir de `MeshRenderer.data.manualMesh/customMesh`, con firma visual para refrescar el viewport en vivo cuando cambian vértices o caras.
+- 2026-03-12: `EditorLayout` integra tab `Model` en Manual e Híbrido; `ModelerPanel` fue reescrito como workspace funcional sobre la entidad seleccionada con `MeshRenderer`.
+- 2026-03-12: `ModelerPanel` ya soporta flujo manual real: selección por `Object/Vertex/Edge/Face`, operaciones `Extrude`, `Inset`, `Subdivide`, `Subdivide edge`, desplazamiento por ejes `+/-X/Y/Z`, primitivas base (`Cubo`, `Plano`), `Mirror X`, `Unwrap planar`, creación de entidad editable y sync en vivo al componente `MeshRenderer`.
+- 2026-03-12: Nuevo test unitario `tests/unit/modeler-mesh.test.ts` valida edición de vértices, subdivisión/extrusión y parseo de malla editable.
+- 2026-03-12: Hardening colateral en UX: `HierarchyPanel` estabiliza el selector de escena con valor `__none__` para evitar warning React `Select is changing from uncontrolled to controlled`; `ModelerPanel` verifica sesión antes de persistir y muestra hint `Config APIs -> Usuario` en vez de disparar `401` al guardar anónimo.
+- 2026-03-12: Validación técnica fase modeler en verde: `pnpm run typecheck`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`), `pnpm exec vitest run tests/unit/modeler-mesh.test.ts tests/unit/scene-graph.test.ts tests/unit/scrib-core.test.ts`, `pnpm run build`.
+- 2026-03-12: Smoke visual fase modeler completado con producción local + skill `develop-web-game`. Evidencias: `output/web-game-phase6/shot-0.png`, `output/phase6-model-panel.png`, `output/phase6-model-after-extrude.png`, `output/phase6-model-final.png`, `output/phase6-model-final.json`.
+- 2026-03-12: DOM verificado en fase modeler: cubo creado en `Escena Principal`, `Model` visible, extrusión incrementa `Vertices/Faces/Aristas` de `8/12/18` a `11/19/27`, movimiento `+Y` modifica el vértice `#0` a `-0.50, -0.40, -0.50`, y guardar sin login ya no emite `401` ni warnings de `Select`.
+- 2026-03-13: Fase siguiente implementada para `Edit Mode` avanzado. `EditorState` ahora comparte `modelerMode` + `modelerSelectedElements` entre `ModelerPanel` y `SceneView`, permitiendo que panel lateral y viewport trabajen sobre la misma sub-selección.
+- 2026-03-13: `src/engine/editor/modelerMesh.ts` ampliado con operaciones nuevas de topología/selección: `knifeFace`, `mergeVertices`, `fillVertices`, `fillEdges`, `gridFillVertices`, `gridFillEdges`, `bevelEdges`, `selectEdgeLoop`, `selectEdgeRing`, además de helpers exportados para `face center`, `face normal` y `edge midpoint`.
+- 2026-03-13: Nuevo módulo `src/engine/editor/modelerViewportHelpers.ts` genera helpers 3D seleccionables para `vertex`, `edge` y `face` dentro del viewport (spheres/octahedrons + wire helpers), con tamaños ampliados para interacción más fiable y lectura visual clara.
+- 2026-03-13: `useSceneViewPointerInteractions` ahora prioriza helpers `modelerSelectable` antes de la selección de entidad completa, evitando que el click sobre sub-elementos caiga en el objeto base.
+- 2026-03-13: `SceneView` conecta pick directo de sub-elementos, HUD contextual `Edit VERTEX/EDGE/FACE`, reconstrucción/limpieza de helper groups y fallback a primitivas (`cube/plane/...`) aunque la entidad todavía no tenga `manualMesh`.
+- 2026-03-13: `ModelerPanel` re-cableado al estado global: cambio de modo compartido con viewport, `Loop select`, `Ring select`, `Bevel`, `Knife`, `Merge`, `Fill`, `Grid Fill`, además de mover vértices multi-seleccionados y operar sobre múltiples caras/aristas cuando aplica.
+- 2026-03-13: `useSceneViewTestBridge` extendido para exponer `getModelerElementScreenPoints()` y `getModelerSelection()`, permitiendo smoke tests precisos de picks directos sobre helpers 3D.
+- 2026-03-13: Validación técnica fase modeler-viewport en verde: `pnpm run typecheck`, `pnpm run build`, `pnpm exec vitest run tests/unit/modeler-mesh.test.ts tests/unit/scene-graph.test.ts tests/unit/scrib-core.test.ts`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`).
+- 2026-03-13: Smoke visual completado con skill `develop-web-game` + Playwright dirigido. Evidencias nuevas: `output/web-game-phase7/shot-0.png`, `output/phase7-model-focused.png`, `output/phase7-face-knife.png`, `output/phase7-edge-bevel.png`, `output/phase7-modeler-viewport-check.json`.
+- 2026-03-13: Verificación visual clave: helpers de `face` y `edge` visibles sobre el cubo enfocado; selección directa de una cara confirmada vía bridge (`selected: [7]`), `Knife` desde viewport/panel elevó el cubo a `Vertices: 9 / Faces: 13 / Aristas: 21`; selección directa de una arista + `Ring select` devolvió 4 aristas y `Bevel` las llevó a `Vertices: 12 / Faces: 20 / Aristas: 30`.
+- TODO: Si se desea, conectar `ui-language-config` a más paneles internos (Inspector/Scrib tabs/Asset labels) para cobertura de traducción más amplia que el shell principal.
+- TODO: Reducir ruido de `401` en smoke anónimo (auth requerida por varias rutas) con modo smoke local autenticado opcional.
+- TODO: Siguiente fase recomendada: `Edit Mode` todavía más profundo con `vertex/edge/face` manipulables desde gizmos por sub-elemento, `bevel`/`knife` más geométricamente fieles, selección de loop/ring topológica avanzada y herramientas `bridge`, `separate`, `rip`, `solidify`.
+- 2026-03-13: Fase recomendada de `Edit Mode` profundo implementada. `SceneView` ahora monta un proxy de gizmo para sub-elementos (`vertex/edge/face`) y aplica `translate/rotate/scale` directamente sobre los vértices seleccionados del `manualMesh`, sincronizando en caliente con store/runtime sin mover el objeto completo.
+- 2026-03-13: `useSceneViewPointerInteractions` quedó ampliado con `customTransformHandlers`, permitiendo drags personalizados del gizmo para sub-selección y corrigiendo el flujo `Shift`: ahora `Shift+click` suma selección sobre entidad/helper si hay hit, y solo cae a box select cuando se hace drag en vacío.
+- 2026-03-13: `modelerMesh.ts` endurecido con operaciones nuevas de esta fase: `bridgeEdges`, `separateFaces`, `ripFaces`, `solidifyMesh`, helpers `getSelectionVertexIndices/getSelectionCenter`, `knifeFace` ahora corta por arista larga compartida (más fiel) y `bevelEdges` genera un chamfer real sobre las caras adyacentes en vez de empujar solo el midpoint.
+- 2026-03-13: `ModelerPanel` ampliado con UX de fase nueva: botón `Solidify` en `Object`, `Bridge` en `Edge`, `Rip` y `Separate` en `Face`; `Separate` crea una entidad editable nueva al lado del mesh actual con `manualMesh` real.
+- 2026-03-13: `useSceneViewTestBridge` extendido otra vez con `setModelerMode`, `getModelerStats`, `getModelerVertexPosition` y `getSceneEntityCount`; nuevo smoke reutilizable `scripts/modeler-subgizmo-smoke.mjs` + script npm `smoke:modeler-subgizmo`.
+- 2026-03-13: Validación técnica fase sub-gizmo/topología en verde: `pnpm run typecheck`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`), `pnpm exec vitest run tests/unit/modeler-mesh.test.ts`, `pnpm run build`.
+- 2026-03-13: Validación visual fase sub-gizmo completada con skill `develop-web-game` + smoke Playwright dedicado. Evidencias: `output/web-game-phase8b/shot-0.png`, `output/phase8-modeler-smoke/viewport.png`, `output/phase8-modeler-smoke/fullpage.png`, `output/phase8-modeler-smoke/report.json`.
+- 2026-03-13: Verificación visual/funcional clave: drag del gizmo sobre vértice `#0` movió la posición de `(-0.5, -0.5, -0.5)` a `(0, 2.4, 0)`; `Rip` elevó el cubo de `8/12/18` a `11/12/21`; `Separate` dejó el mesh activo en `8/11/18` y creó una segunda entidad editable; `Solidify` llevó el mesh a `16/28/42`, todo sin errores de consola en el smoke.
+- TODO: Siguiente fase recomendada ahora: profundizar el modelador manual con `rotate/scale` de sub-elementos verificados visualmente por eje, `Bridge` con smoke visual multiarista, `knife/bevel` con parámetros editables (`amount`, `segments`) y operaciones nuevas `inset por región`, `duplicate/extrude along normal`, `weld by distance`, `bridge loops` y `delete faces/edges/vertices`.
+- 2026-03-13: Fase siguiente del modelador manual implementada sobre `Edit Mode` profundo. `modelerMesh.ts` ahora suma `extrudeFaceRegion`, `insetFaceRegion`, `duplicateFacesAlongNormal`, `bridgeEdgeLoops`, `weldVerticesByDistance`, `deleteFaces`, `deleteEdges`, `deleteVertices` y versiones parametrizables de `knifeFace(amount, segments)` + `bevelEdges(amount, segments)`.
+- 2026-03-13: `ModelerPanel` ampliado con UX de fase nueva: inputs numéricos por modo (`Solidify`, `Weld dist`, `Bevel amt/seg`, `Bridge seg`, `Extrude`, `Dup normal`, `Inset`, `Knife amt/seg`) y acciones nuevas `Weld`, `Bridge loops`, `Duplicate normal`, `Delete` por `vertex/edge/face`, además de usar `extrude/inset` por región en selección múltiple.
+- 2026-03-13: `useSceneViewTestBridge` creció con `setModelerSelection` y `getModelerSelectionVertexIndices`, habilitando validación dirigida de transformaciones `scale/rotate` sobre sub-selección real del modelador desde Playwright.
+- 2026-03-13: Nuevo smoke dedicado `scripts/modeler-phase9-smoke.mjs` + script npm `smoke:modeler-phase9`; también se ejecutó el cliente base de la skill `develop-web-game` con evidencia en `output/web-game-phase9/shot-0.png`.
+- 2026-03-13: Validación técnica fase modeler-param en verde: `pnpm exec vitest run tests/unit/modeler-mesh.test.ts`, `pnpm run typecheck`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`) y `pnpm run build`.
+- 2026-03-13: Validación visual fase modeler-param completada. Evidencias: `output/phase9-modeler-smoke/viewport.png`, `output/phase9-modeler-smoke/fullpage.png`, `output/phase9-modeler-smoke/report.json`.
+- 2026-03-13: Verificación visual/funcional clave de esta fase: `Duplicate normal` llevó el cubo de `8/12/18` a `11/13/21`; `Knife` parametrizado (`0.75`, `3`) lo movió a `14/19/30`; `Bevel` parametrizado (`0.22`, `3`) lo elevó a `22/29/50`; y el smoke confirmó que `scale` y `rotate` del sub-gizmo modifican vértices reales del `manualMesh` sin errores de consola.
+- TODO: Siguiente fase sugerida ahora: endurecer `Bridge loops` con smoke visual multigrupo/closed-loop real, añadir selección topológica más inteligente (`loop/ring` por continuidad de caras), y mejorar `scale` de sub-elementos con límites/clamps para evitar deformaciones extremas cuando el usuario arrastra ejes muy lejos.
+- 2026-03-13: Fase siguiente del modelador implementada sobre topología/estabilidad. `selectEdgeLoop` dejó de ser BFS global por dirección y ahora recorre continuidad topológica por vértice con scoring local (alineación + longitud + continuidad de caras); `selectEdgeRing` ahora usa quads virtuales reconstruidos desde pares de triángulos para encontrar aristas opuestas reales en strips triangulados.
+- 2026-03-13: `bridgeEdgeLoops` endurecido para casos reales: ahora empareja grupos por proximidad de centroides (no por orden de selección), valida loops abiertos/cerrados completos y alinea loops cerrados por rotación/reversa de menor costo antes de puentear.
+- 2026-03-13: `SceneView` endurecido para sub-element scale. El gizmo ahora limita ratios de escala (`min/max`) y también la distancia máxima del vértice respecto al centro de selección, evitando deformaciones extremas cuando se arrastra demasiado lejos un eje.
+- 2026-03-13: Fix colateral importante en `ModelerPanel`: la malla local del panel ahora se resincroniza cuando la entidad seleccionada cambia `manualMesh` desde fuera del panel (viewport/test bridge/store), evitando que operaciones de panel trabajen con una copia stale del mesh.
+- 2026-03-13: `useSceneViewTestBridge` ampliado otra vez con `setSelectedEntityMesh` y `getModelerEdges`, permitiendo smokes reproducibles con mallas sintéticas controladas para `loop/ring` y `bridge loops`.
+- 2026-03-13: Nuevo smoke de esta fase `scripts/modeler-phase10-smoke.mjs` + script npm `smoke:modeler-phase10`; además se ejecutó el cliente base de la skill `develop-web-game` con evidencia en `output/web-game-phase10/shot-0.png`.
+- 2026-03-18: Punto 3 cerrado end-to-end para los perfiles productivos locales. `scripts/env-utils.mjs` ahora soporta orden de carga por perfil sin pisar variables ya inyectadas, `start-production-local.mjs` y `start-semi-production-local.mjs` priorizan `.env.production(.local)` por encima de `.env.local`, y `production local` exige además backend distribuido de rate limit o `REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION=true` para despliegue intencional de nodo unico.
+- 2026-03-18: Punto 4 endurecido sobre workspaces con `#`. Se creó `scripts/shadow-workspace.mjs` como helper compartido de shadow copy, firmas de dependencias y regeneración de Prisma; `build-safe`, `typecheck-safe`, `vitest-safe` y `prisma-db-safe` ahora usan la misma ruta segura; `start-clean-app.bat` refresca Prisma del workspace activo antes de arrancar; y quedó smoke reproducible en `pnpm smoke:shadow-workspace`.
+- 2026-03-18: Punto 5 iniciado/cerrado con e2e formal adicional en `tests/e2e/production-http-workflows.e2e.test.ts`. El suite ahora cubre runtime `production-local` real con registro por invitación, sesión autenticada, gating de `Assets`, lectura/escritura de `user/api-config` con `CSRF`, y flujo completo de `Script Workspace` (`create -> list -> read -> save -> compile -> delete`). `node scripts/vitest-safe.mjs run tests/e2e` quedó en verde con `4` tests totales.
+- 2026-03-20: Siguiente fase productiva implementada como orquestación reusable de promoción. `ci-quality-gate.yml` ahora soporta `workflow_call`, `postdeploy-smoke-rollback.yml` acepta `base_url` opcional con fallback a `PRODUCTION_BASE_URL`, y se agregó `promotion-gate.yml` para encadenar `release seal -> postdeploy smoke -> rollback` en una sola corrida manual de GitHub Actions.
+- 2026-03-20: Fase siguiente de plataforma completada para Render sin desplegar todavía. Se agregó `render.yaml` con `web + postgres + persistent disk`, `autoDeployTrigger: off`, `preDeployCommand` para migraciones, roots persistentes montados en `/var/data/rey30`, y guía operativa en `docs/RENDER_DEPLOY_READY.md`.
+- 2026-03-13: Validación técnica fase topología-clamp en verde: `pnpm exec vitest run tests/unit/modeler-mesh.test.ts`, `pnpm run typecheck`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`) y `pnpm run build`.
+- 2026-03-13: Validación visual fase topología-clamp completada. Evidencias: `output/phase10-modeler-smoke/bridge-loops.png`, `output/phase10-modeler-smoke/scale-clamp.png`, `output/phase10-modeler-smoke/fullpage.png`, `output/phase10-modeler-smoke/report.json`.
+- 2026-03-13: Verificación visual/funcional clave de esta fase: `Loop select` en strip triangulado devolvió `0:1 -> 1:2`; `Ring select` devolvió el anillo topológico `0:3 / 1:4 / 2:5`; `Bridge loops` multigrupo llevó una malla de `16/8/20` a `24/40/60`; y el drag extremo de `scale` quedó acotado a una deformación final de magnitud `0.8333` en vez de dispararse a valores enormes.
+- 2026-03-13: TODO anterior de `slide/relax/collapse` completado y absorbido en la fase actual del modelador.
+- 2026-03-13: Fase siguiente del modelador cerrada con `slide/relax/collapse`. `modelerMesh.ts` ahora exporta `slideVertices`, `relaxVertices` y `collapseEdges`, cubriendo deslizamiento topológico básico, suavizado iterativo por vecinos y colapso de aristas por centroides con compactación segura.
+- 2026-03-13: `ModelerPanel` ampliado otra vez: modo `Vertex` suma `Slide +/-` y `Relax` con controles `Slide amt`, `Relax`, `Relax it`; modo `Edge` suma `Collapse`. Además se añadió barra de movimiento del panel, progreso de scroll y saltos rápidos `Inicio / Seleccion / Ayuda / Final`.
+- 2026-03-13: Documentación específica del modelador actualizada en `docs/MODELER_MANUAL_WORKFLOW.md` y también se dejó referencia cruzada dentro de `docs/GUIA_USO_COMPLETA_MANUAL_HIBRIDO_AI.md` para no perder el estado real de la herramienta.
+- 2026-03-13: Nuevo smoke visual de esta fase `scripts/modeler-phase11-smoke.mjs` + script npm `smoke:modeler-phase11`; valida `Slide`, `Relax`, `Collapse` y `scroll roll` real sobre `ModelerPanel`.
+- 2026-03-13: Validación final de esta fase en verde: `pnpm exec vitest run tests/unit/modeler-mesh.test.ts`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`), `pnpm run build`, `pnpm run typecheck` y `pnpm run smoke:modeler-phase11`.
+- 2026-03-13: Evidencias fase 11: `output/phase11-modeler-smoke/report.json`, `output/phase11-modeler-smoke/slide-relax.png`, `output/phase11-modeler-smoke/scroll-roll.png`, `output/phase11-modeler-smoke/fullpage.png`, más el cliente base de la skill en `output/web-game-phase11/shot-0.png`.
+- 2026-03-13: Gotcha operativo detectado: `typecheck` no debe correrse en paralelo con `build` porque ambos interactúan con `.next/types` y puede aparecer un falso fallo `TS6053` por archivos temporales ausentes aunque el código esté correcto.
+- TODO: Siguiente fase sugerida ahora: avanzar con selección topológica por paths/regiones complejas, `slide` constrained por edge-path/eje, `relax` preservando fronteras duras y abrir el bloque de `UV/materiales/texturas`.
+- 2026-03-13: Siguiente fase implementada sobre selección topológica compleja. `modelerMesh.ts` ahora suma `selectVertexPath`, `selectEdgePath`, `selectFaceIsland`, `growFaceSelection` y `shrinkFaceSelection`, además de extender `slideVertices` con modos `path/axis` y `relaxVertices` con preservación de bordes duros.
+- 2026-03-13: `ModelerPanel` ampliado de nuevo: modo `Vertex` agrega `Path select` + restricciones `Free/Path/Axis X/Y/Z`; modo `Edge` agrega `Path select`; modo `Face` agrega `Island`, `Grow region`, `Shrink region` con `Region step`.
+- 2026-03-13: Hardening real del pipeline: `typecheck-safe.mjs` ya genera tipos en `.next-typecheck`, `next.config.ts` acepta `REY30_NEXT_DIST_DIR`, `tsconfig.json` quedó alineado para incluir ese directorio de tipos y `.gitignore`/`build-safe.mjs` lo ignoran como artefacto temporal. Se validó específicamente `build` + `typecheck` corriendo en paralelo sin reproducir el falso `TS6053`.
+- 2026-03-13: Nuevo smoke visual `scripts/modeler-phase12-smoke.mjs` + script npm `smoke:modeler-phase12`; valida `Vertex path`, `Path slide`, `Edge path`, `Island`, `Grow region` y `Shrink region`.
+- 2026-03-13: Validación final de esta fase en verde: `pnpm exec vitest run tests/unit/modeler-mesh.test.ts`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`), `pnpm run typecheck`, `pnpm run build`, `pnpm run smoke:modeler-phase12` y corrida paralela `build + typecheck` sin fallo.
+- 2026-03-13: Evidencias fase 12: `output/phase12-modeler-smoke/report.json`, `output/phase12-modeler-smoke/fullpage.png` y `output/web-game-phase12/shot-0.png`.
+- TODO: Siguiente fase sugerida ahora: rematar `UV/materiales/texturas`, sumar `slide` sobre edge-path más complejo con constraints locales y empezar selección/regiones semánticas por material/isla/normal.
+- 2026-03-13: Fase 13 del modelador implementada como primer bloque serio de `UV/materiales/texturas`. `modelerMesh.ts` ahora expone `selectFacesByNormal`, `projectSelectionUvs`, `fitSelectionUvs`, `translateSelectionUvs`, `scaleSelectionUvs` y `rotateSelectionUvs`.
+- 2026-03-13: `ModelerPanel` ampliado con UX de esta fase: `Material ID` + `Apply material` a nivel `MeshRenderer`, `Select normal` en `Face` y bloque `Face UV tools` con `Project UV`, `Fit UV`, `Move UV`, `Scale UV`, `Rotate UV` e inputs para offset/scale/rotation/padding/tolerancia normal.
+- 2026-03-13: `useSceneViewTestBridge` ampliado con `getSelectedEntityMesh` y `getSelectedEntityMaterialId`, permitiendo validar UVs y material real desde Playwright sin inspección manual del store.
+- 2026-03-13: `sceneView.visuals.ts` ahora incluye `materialId` en la firma visual del objeto y genera color/material base estable por ID, con respuesta visible inmediata en viewport cuando se cambia material y realce suave si el mesh ya tiene UVs.
+- 2026-03-13: Cobertura añadida en `tests/unit/modeler-mesh.test.ts` para selección por normal y pipeline UV (`project/translate/scale/rotate/fit`).
+- 2026-03-13: Nuevo smoke visual `scripts/modeler-phase13-smoke.mjs` + script npm `smoke:modeler-phase13`; valida `Select normal`, `Project/Move/Scale/Rotate/Fit UV` y `Apply material`.
+- 2026-03-13: Validación final de esta fase en verde: `pnpm exec vitest run tests/unit/modeler-mesh.test.ts`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`), `pnpm run typecheck`, `pnpm run build`, `pnpm run smoke:modeler-phase13`.
+- 2026-03-13: Validación visual adicional con skill `develop-web-game` ejecutada sobre `http://127.0.0.1:3000`, sin `errors-0.json`; evidencia extra en `output/web-game-phase13/shot-0.png`.
+- 2026-03-13: Evidencias fase 13: `output/phase13-modeler-smoke/report.json`, `output/phase13-modeler-smoke/fullpage.png`, `output/phase13-modeler-smoke/uv-material.png`, `output/web-game-phase13/shot-0.png`.
+- TODO: Siguiente fase sugerida ahora: abrir `UV seams` + `island packing`, selección por `UV island/material`, preview checker/textura en viewport y evaluar si conviene introducir material slots por cara o grupos de caras antes de rigging.
+- 2026-03-13: Fase 14 del modelador implementada sobre UV avanzado. `modelerMesh.ts` ahora soporta `markSeamEdges`, `clearSeamEdges`, `selectUvIsland` y `packUvIslands`; además `EditableMesh` ya persiste `seamEdges`.
+- 2026-03-13: `Pack islands` usa seams para separar conectividad UV y, cuando hace falta, materializa la separación duplicando vértices en esos bordes para poder empaquetar islas aunque el mesh solo guarde una `uv` por vértice.
+- 2026-03-13: `ModelerPanel` ampliado con UX nueva: `Mark seam` / `Clear seam` en `Edge`, `UV island` / `Pack islands` en `Face`, y bloque `UV preview` con `Checker on/off` + `Checker scale`.
+- 2026-03-13: `sceneView.visuals.ts` ahora incluye `checkerPreview`/`checkerScale` en la firma visual, aplica checker procedural repetido por UV cuando está activo y dibuja overlay de seams sobre el mesh manual.
+- 2026-03-13: `useSceneViewTestBridge` ampliado con `getSelectedEntityPreviewState`; `getSelectedEntityMesh` ahora devuelve también `seamEdges`.
+- 2026-03-13: Cobertura añadida en `tests/unit/modeler-mesh.test.ts` para flujo completo `mark seam -> UV island -> pack islands -> clear seam`.
+- 2026-03-13: Nuevo smoke visual `scripts/modeler-phase14-smoke.mjs` + script npm `smoke:modeler-phase14`; valida seam count, `UV island`, packing en dos celdas y checker preview activo con escala aplicada.
+- 2026-03-13: Validación final de esta fase en verde: `pnpm exec vitest run tests/unit/modeler-mesh.test.ts`, `pnpm run lint` (solo warning heredado en `scripts/scribs/movement.scrib.ts`), `pnpm run typecheck`, `pnpm run build`, `pnpm run smoke:modeler-phase14`.
+- 2026-03-13: Validación visual adicional con skill `develop-web-game` ejecutada sobre `http://127.0.0.1:3000`, sin `errors-0.json`; evidencia extra en `output/web-game-phase14/shot-0.png`.
+- 2026-03-13: Evidencias fase 14: `output/phase14-modeler-smoke/report.json`, `output/phase14-modeler-smoke/fullpage.png`, `output/phase14-modeler-smoke/checker-islands.png`, `output/web-game-phase14/shot-0.png`.
+- TODO: Siguiente fase sugerida ahora: editor 2D de UVs, texture/checker chooser más serio, selección por material/slot y decidir si conviene evolucionar `manualMesh` hacia UVs por cara-esquina antes de entrar a materiales/rigging más complejos.
