@@ -43,6 +43,7 @@ async function syncBuildBack(shadowRoot, sourceRoot) {
 }
 
 async function buildInCurrentRoot(root) {
+  runCommand('pnpm', ['exec', 'prisma', 'generate'], { cwd: root });
   runCommand('pnpm', ['exec', 'next', 'build', '--webpack'], { cwd: root });
   runCommand('node', ['scripts/prepare-standalone.mjs'], { cwd: root });
 }
