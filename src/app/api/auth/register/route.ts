@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { Prisma, type UserRole } from '@prisma/client';
+import type { UserRole } from '@prisma/client';
 import { db } from '@/lib/db';
 import { hashPassword } from '@/lib/security/password';
 import {
@@ -92,11 +92,18 @@ function canPromoteFirstUserToOwner(request: NextRequest, body: RegisterRequestB
   return safeTokenEqual(provided, expected);
 }
 
-function isRetryablePrismaError(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) {
-    return false;
+function getPrismaErrorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return null;
   }
-  return error.code === 'P2002' || error.code === 'P2034';
+
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : null;
+}
+
+function isRetryablePrismaError(error: unknown): boolean {
+  const code = getPrismaErrorCode(error);
+  return code === 'P2002' || code === 'P2034';
 }
 
 async function sleep(ms: number): Promise<void> {

@@ -1,4 +1,4 @@
-import { ApiProvider, Prisma } from '@prisma/client';
+import { ApiProvider } from '@prisma/client';
 import { db } from '@/lib/db';
 
 export type ProviderKey = 'openai' | 'meshy' | 'runway' | 'ollama' | 'vllm' | 'llamacpp';
@@ -285,14 +285,21 @@ export function estimateProviderCostUsd(provider: ProviderKey, action: string): 
   return DEFAULT_COST_BY_ACTION[`${provider}:chat`] ?? 0;
 }
 
+function getPrismaErrorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return null;
+  }
+
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : null;
+}
+
 export async function shouldIgnoreDeletedUserRace(
   userId: string,
   error: unknown
 ): Promise<boolean> {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) {
-    return false;
-  }
-  if (error.code !== 'P2003' && error.code !== 'P2025') {
+  const code = getPrismaErrorCode(error);
+  if (code !== 'P2003' && code !== 'P2025') {
     return false;
   }
 
