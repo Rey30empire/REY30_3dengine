@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { engineTelemetry } from '@/engine/telemetry/engineTelemetry';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 import { hasValidOpsToken } from '@/lib/security/ops-token';
+import { runtimeForensicsWebhookFailureRateMetric } from '@/lib/server/runtime-forensics-prometheus';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +14,11 @@ async function authorizeRead(request: NextRequest): Promise<void> {
 export async function GET(request: NextRequest) {
   try {
     await authorizeRead(request);
-    const metrics = engineTelemetry.toPrometheusMetrics();
+    const metrics = [
+      engineTelemetry.toPrometheusMetrics().trimEnd(),
+      await runtimeForensicsWebhookFailureRateMetric(),
+      '',
+    ].join('\n');
     return new NextResponse(metrics, {
       status: 200,
       headers: {
@@ -25,4 +30,3 @@ export async function GET(request: NextRequest) {
     return authErrorToResponse(error);
   }
 }
-

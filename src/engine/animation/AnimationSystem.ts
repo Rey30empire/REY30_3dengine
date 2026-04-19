@@ -736,12 +736,12 @@ export class IKSolver {
 export class AnimationSystem {
   private animators: Set<Animator>;
   private ikSolvers: Set<IKSolver>;
-  private clock: THREE.Clock;
+  private lastUpdateTime: number;
 
   constructor() {
     this.animators = new Set();
     this.ikSolvers = new Set();
-    this.clock = new THREE.Clock();
+    this.lastUpdateTime = performance.now();
   }
 
   addAnimator(animator: Animator): void {
@@ -761,7 +761,9 @@ export class AnimationSystem {
   }
 
   update(): void {
-    const deltaTime = this.clock.getDelta();
+    const now = performance.now();
+    const deltaTime = Math.min((now - this.lastUpdateTime) / 1000, 0.1);
+    this.lastUpdateTime = now;
 
     // Update animators
     for (const animator of this.animators) {

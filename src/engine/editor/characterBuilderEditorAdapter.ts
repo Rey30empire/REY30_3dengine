@@ -1,6 +1,7 @@
 'use client';
 
 import { consoleManager } from './ConsolePanel';
+import { parseStoredCharacterPreset } from '@/lib/character-preset-document';
 import type {
   CharacterAssetRecord,
   CharacterBuilderEngineAdapter,
@@ -9,9 +10,11 @@ import type {
   CharacterPartVariant,
   StoredCharacterPreset,
 } from '@/engine/character-builder';
+import { useEngineStore } from '@/store/editorStore';
 
 const PRESET_STORAGE_KEY = 'rey30.characterBuilder.presets.v1';
 const LIBRARY_INDEX_PATH = '/library/character-builder-library.json';
+const CHARACTER_PRESET_API_PATH = '/api/character/presets';
 
 function variant(id: string, label: string, swatch?: string): NonNullable<CharacterAssetRecord['materialVariants']>[number] {
   return {
@@ -226,6 +229,117 @@ function writePresetStorage(presets: StoredCharacterPreset[]) {
   window.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets));
 }
 
+function resolveCharacterPresetProjectName() {
+  return useEngineStore.getState().projectName || 'untitled_project';
+}
+
+function mergePresetLists(
+  primary: StoredCharacterPreset[],
+  secondary: StoredCharacterPreset[]
+) {
+  const merged = new Map<string, StoredCharacterPreset>();
+
+  secondary.forEach((entry) => {
+    merged.set(entry.name.trim().toLowerCase(), entry);
+  });
+  primary.forEach((entry) => {
+    merged.set(entry.name.trim().toLowerCase(), entry);
+  });
+
+  return [...merged.values()];
+}
+
+function upsertPresetEntry(
+  presets: StoredCharacterPreset[],
+  nextEntry: StoredCharacterPreset
+) {
+  return mergePresetLists(
+    [nextEntry],
+    presets.filter((entry) => entry.id !== nextEntry.id)
+  );
+}
+
+async function readResponseError(response: Response, fallback: string) {
+  const payload = (await response.json().catch(() => null)) as
+    | { error?: unknown }
+    | null;
+  return typeof payload?.error === 'string' && payload.error.trim().length > 0
+    ? payload.error.trim()
+    : fallback;
+}
+
+function readServerPresetEntry(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const definition = parseStoredCharacterPreset(
+    (value as { definition?: unknown }).definition
+  );
+  return definition;
+}
+
+async function fetchServerCharacterPresets() {
+  const response = await fetch(CHARACTER_PRESET_API_PATH, {
+    cache: 'no-store',
+    headers: {
+      'x-rey30-project': resolveCharacterPresetProjectName(),
+    },
+  });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, 'No se pudieron cargar presets del servidor.'));
+  }
+
+  const payload = (await response.json().catch(() => ({}))) as {
+    presets?: unknown[];
+  };
+  return Array.isArray(payload.presets)
+    ? payload.presets
+        .map((entry) => readServerPresetEntry(entry))
+        .filter((entry): entry is StoredCharacterPreset => Boolean(entry))
+    : [];
+}
+
+async function persistServerCharacterPreset(entry: StoredCharacterPreset) {
+  const response = await fetch(CHARACTER_PRESET_API_PATH, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-rey30-project': resolveCharacterPresetProjectName(),
+    },
+    body: JSON.stringify({
+      entry,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, 'No se pudo guardar el preset en servidor.'));
+  }
+
+  const payload = (await response.json().catch(() => ({}))) as {
+    preset?: unknown;
+  };
+  return parseStoredCharacterPreset(payload.preset) ?? entry;
+}
+
+async function removeServerCharacterPreset(name: string) {
+  const response = await fetch(
+    `${CHARACTER_PRESET_API_PATH}?name=${encodeURIComponent(name)}`,
+    {
+      method: 'DELETE',
+      headers: {
+        'x-rey30-project': resolveCharacterPresetProjectName(),
+      },
+    }
+  );
+
+  if (response.ok) {
+    return true;
+  }
+
+  if (response.status === 404) {
+    return false;
+  }
+
+  throw new Error(await readResponseError(response, 'No se pudo eliminar el preset del servidor.'));
+}
+
 function readString(
   value: unknown,
   fallback = ''
@@ -398,17 +512,44 @@ export function createCharacterBuilderEditorAdapter(): CharacterBuilderEngineAda
       return Promise.all(BUILTIN_LIBRARY_MANIFEST.map((entry) => resolveLibraryEntry(entry)));
     },
     async listCharacterPresets() {
-      return readPresetStorage();
+      const localPresets = readPresetStorage();
+      try {
+        const serverPresets = await fetchServerCharacterPresets();
+        return mergePresetLists(serverPresets, localPresets);
+      } catch {
+        return localPresets;
+      }
     },
     async saveCharacterPreset(entry) {
-      const current = readPresetStorage();
-      const next = current.filter((item) => item.id !== entry.id);
-      next.push(entry);
-      writePresetStorage(next);
+      try {
+        const savedPreset = await persistServerCharacterPreset(entry);
+        writePresetStorage(upsertPresetEntry(readPresetStorage(), savedPreset));
+        return;
+      } catch {
+        writePresetStorage(upsertPresetEntry(readPresetStorage(), entry));
+      }
     },
     async deleteCharacterPreset(presetId) {
-      const current = readPresetStorage();
-      writePresetStorage(current.filter((entry) => entry.id !== presetId));
+      const current = await this.listCharacterPresets();
+      const preset = current.find((entry) => entry.id === presetId) ?? null;
+
+      writePresetStorage(
+        readPresetStorage().filter(
+          (entry) =>
+            entry.id !== presetId &&
+            (!preset || entry.name.trim().toLowerCase() !== preset.name.trim().toLowerCase())
+        )
+      );
+
+      if (!preset) {
+        return;
+      }
+
+      try {
+        await removeServerCharacterPreset(preset.name);
+      } catch {
+        return;
+      }
     },
     showMessage(message, level = 'info') {
       logByLevel(message, level);

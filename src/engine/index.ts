@@ -46,4 +46,8 @@ export { buildReyPlayManifest, validateReyPlayProject } from './reyplay/build/co
 
 // Advanced authoring foundations
 export * as EngineSystems from './systems';
+export * as UIRuntime from './ui-runtime';
+
+// Agentic architecture foundation
+export * as AgenticEngine from './agentic';
 

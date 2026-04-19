@@ -5,11 +5,14 @@ import {
   requireSession,
 } from '@/lib/security/auth';
 import {
-  getUserScopedConfigForClient,
+  getUserScopedConfig,
   saveUserScopedConfig,
+  toClientUserScopedConfig,
 } from '@/lib/security/user-api-config';
 import { isMissingEncryptionSecretError } from '@/lib/security/crypto';
+import { isLocalProviderConfigError } from '@/lib/security/local-provider-policy';
 import { isSharedAccessUserEmail } from '@/lib/security/shared-access';
+import { buildAdminProviderStatuses } from '@/lib/server/admin-provider-status';
 
 type SaveConfigBody = {
   apiConfig?: unknown;
@@ -21,8 +24,10 @@ const MAX_CONFIG_PAYLOAD_BYTES = 250_000;
 export async function GET(request: NextRequest) {
   try {
     const user = await requireSession(request, 'VIEWER');
-    const config = await getUserScopedConfigForClient(user.id);
+    const scopedConfig = await getUserScopedConfig(user.id);
+    const config = toClientUserScopedConfig(scopedConfig);
     const isSharedAccess = isSharedAccessUserEmail(user.email);
+    const providerStatuses = await buildAdminProviderStatuses(scopedConfig);
 
     await logSecurityEvent({
       request,
@@ -33,6 +38,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       ...config,
+      providerStatuses,
       user: {
         id: user.id,
         email: user.email,
@@ -42,7 +48,7 @@ export async function GET(request: NextRequest) {
         byok: !isSharedAccess,
         sharedAccess: isSharedAccess,
         responsibility: isSharedAccess
-          ? 'Sesión compartida por token. La app usa credenciales del servidor para OpenAI/Meshy.'
+          ? 'Sesión compartida por token con permisos de colaborador. La app usa credenciales del servidor para OpenAI/Meshy.'
           : 'Cada usuario gestiona sus APIs y asume su costo/uso. El servicio solo provee la app.',
       },
     });
@@ -58,8 +64,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  let userId: string | undefined;
   try {
-    const user = await requireSession(request, 'VIEWER');
+    const user = await requireSession(request, 'EDITOR');
+    userId = user.id;
     const body = (await request.json()) as SaveConfigBody;
     const payloadBytes = JSON.stringify(body || {}).length;
 
@@ -70,6 +78,7 @@ export async function PUT(request: NextRequest) {
         action: 'user.api_config.write',
         status: 'denied',
         metadata: { reason: 'payload_too_large', payloadBytes },
+        durability: 'critical',
       });
       return NextResponse.json(
         { error: 'El payload de configuración es demasiado grande.' },
@@ -88,6 +97,8 @@ export async function PUT(request: NextRequest) {
       apiConfig: body.apiConfig as any,
       localConfig: body.localConfig as any,
     });
+    const scopedConfig = await getUserScopedConfig(user.id);
+    const providerStatuses = await buildAdminProviderStatuses(scopedConfig);
 
     await logSecurityEvent({
       request,
@@ -95,10 +106,12 @@ export async function PUT(request: NextRequest) {
       action: 'user.api_config.write',
       status: 'allowed',
       metadata: { role: user.role },
+      durability: 'critical',
     });
 
     return NextResponse.json({
       ...saved,
+      providerStatuses,
       policy: {
         byok: !isSharedAccessUserEmail(user.email),
         sharedAccess: isSharedAccessUserEmail(user.email),
@@ -111,9 +124,11 @@ export async function PUT(request: NextRequest) {
     if (isMissingEncryptionSecretError(error)) {
       await logSecurityEvent({
         request,
+        userId,
         action: 'user.api_config.write',
         status: 'denied',
         metadata: { reason: 'missing_encryption_secret' },
+        durability: 'critical',
       });
       return NextResponse.json(
         { error: 'Configuración incompleta del servidor: falta clave de cifrado.' },
@@ -125,11 +140,35 @@ export async function PUT(request: NextRequest) {
       return authErrorToResponse(error);
     }
 
+    if (isLocalProviderConfigError(error)) {
+      await logSecurityEvent({
+        request,
+        userId,
+        action: 'user.api_config.write',
+        status: 'denied',
+        metadata: {
+          reason: error.code,
+          provider: error.provider,
+        },
+        durability: 'critical',
+      });
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: error.code,
+          provider: error.provider,
+        },
+        { status: error.status }
+      );
+    }
+
     await logSecurityEvent({
       request,
+      userId,
       action: 'user.api_config.write',
       status: 'error',
       metadata: { error: String(error) },
+      durability: 'critical',
     });
     return NextResponse.json(
       { error: 'No se pudo guardar la configuración.' },

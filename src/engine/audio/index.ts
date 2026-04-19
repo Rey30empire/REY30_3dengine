@@ -10,12 +10,27 @@ export {
   audioEngine 
 } from './AudioEngine';
 
+export {
+  AudioRuntimeBridge,
+  audioRuntimeBridge,
+} from './audioRuntimeBridge';
+
+export {
+  AUDIO_MIXER_GROUPS,
+  DEFAULT_AUDIO_SOURCE_DATA,
+  createDefaultAudioSourceData,
+  normalizeAudioSourceData,
+  resolveAudioSourceClip,
+} from './audioSourceData';
+
 export type {
   AudioSettings,
   AudioMixerGroup,
   AudioEffect,
   ReverbZone,
 } from './AudioEngine';
+
+export type { RuntimeAudioEngine, RuntimeAudioSourceHandle } from './audioRuntimeBridge';
 
 export { 
   AudioMixer, 

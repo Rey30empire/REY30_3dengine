@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { readDurableSecurityAuditLogs } from '@/lib/server/external-integration-store';
 import {
   authErrorToResponse,
   logSecurityEvent,
@@ -9,14 +10,25 @@ import {
 export async function GET(request: NextRequest) {
   try {
     const user = await requireSession(request, 'EDITOR');
-    const logs = await db.securityAuditLog.findMany({
-      where: { userId: user.id },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-    });
+    let dbReadError: unknown = null;
+    const [dbLogs, fallbackLogs] = await Promise.all([
+      db.securityAuditLog.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }).catch((error) => {
+        dbReadError = error;
+        return [];
+      }),
+      Promise.resolve(readDurableSecurityAuditLogs({ userId: user.id, take: 200 })),
+    ]);
 
-    return NextResponse.json({
-      logs: logs.map((entry) => ({
+    if (dbReadError && fallbackLogs.length === 0) {
+      throw dbReadError;
+    }
+
+    const logs = [
+      ...dbLogs.map((entry) => ({
         id: entry.id,
         action: entry.action,
         target: entry.target,
@@ -25,6 +37,21 @@ export async function GET(request: NextRequest) {
         createdAt: entry.createdAt,
         metadata: entry.metadata,
       })),
+      ...fallbackLogs.map((entry) => ({
+        id: entry.id,
+        action: entry.action,
+        target: entry.target,
+        status: entry.status,
+        ipAddress: entry.ipAddress,
+        createdAt: new Date(entry.createdAt),
+        metadata: entry.metadata,
+      })),
+    ]
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+      .slice(0, 200);
+
+    return NextResponse.json({
+      logs,
     });
   } catch (error) {
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {

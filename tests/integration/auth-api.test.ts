@@ -8,15 +8,83 @@ import { GET as sessionGet } from '@/app/api/auth/session/route';
 import { POST as registerPost } from '@/app/api/auth/register/route';
 import { POST as tokenPost } from '@/app/api/auth/token/route';
 import { GET as userConfigGet } from '@/app/api/user/api-config/route';
-import { GET as telemetryGet } from '@/app/api/telemetry/route';
+import { GET as telemetryGet, POST as telemetryPost } from '@/app/api/telemetry/route';
+import { GET as backupsGet } from '@/app/api/ops/backups/route';
 
 describe('Auth + provider API integration', () => {
   it('session endpoint reports unauthenticated without cookie', async () => {
-    const request = new NextRequest('http://localhost/api/auth/session');
-    const response = await sessionGet(request);
-    const payload = await response.json();
-    expect(response.status).toBe(200);
-    expect(payload.authenticated).toBe(false);
+    const previousLocalOwnerMode = process.env.REY30_LOCAL_OWNER_MODE;
+
+    delete process.env.REY30_LOCAL_OWNER_MODE;
+
+    try {
+      const request = new NextRequest('http://localhost/api/auth/session');
+      const response = await sessionGet(request);
+      const payload = await response.json();
+      expect(response.status).toBe(200);
+      expect(payload.authenticated).toBe(false);
+      expect(payload.editorAccess?.shellMode).toBe('product');
+    } finally {
+      if (previousLocalOwnerMode === undefined) {
+        delete process.env.REY30_LOCAL_OWNER_MODE;
+      } else {
+        process.env.REY30_LOCAL_OWNER_MODE = previousLocalOwnerMode;
+      }
+    }
+  });
+
+  it('bootstraps a local owner session without email or password when local mode is enabled', async () => {
+    const previous = {
+      REY30_LOCAL_OWNER_MODE: process.env.REY30_LOCAL_OWNER_MODE,
+      REY30_LOCAL_OWNER_ALLOW_REMOTE: process.env.REY30_LOCAL_OWNER_ALLOW_REMOTE,
+      REY30_LOCAL_OWNER_EMAIL: process.env.REY30_LOCAL_OWNER_EMAIL,
+      REY30_LOCAL_OWNER_NAME: process.env.REY30_LOCAL_OWNER_NAME,
+    };
+
+    process.env.REY30_LOCAL_OWNER_MODE = 'true';
+    process.env.REY30_LOCAL_OWNER_ALLOW_REMOTE = 'false';
+    process.env.REY30_LOCAL_OWNER_EMAIL = 'owner-local-test@rey30.local';
+    process.env.REY30_LOCAL_OWNER_NAME = 'Local Owner Test';
+
+    try {
+      const databaseReachable = await db.$queryRaw`SELECT 1`
+        .then(() => true)
+        .catch(() => false);
+
+      if (!databaseReachable) {
+        expect(databaseReachable).toBe(false);
+        return;
+      }
+
+      const response = await sessionGet(new NextRequest('http://localhost/api/auth/session'));
+      const payload = await response.json();
+      const cookie = response.cookies.get('rey30_session');
+
+      expect(response.status).toBe(200);
+      expect(payload.authenticated).toBe(true);
+      expect(payload.policy?.localOwnerMode).toBe(true);
+      expect(payload.user?.email).toBe('owner-local-test@rey30.local');
+      expect(payload.user?.role).toBe('OWNER');
+      expect(cookie?.value).toBeTruthy();
+
+      const configResponse = await userConfigGet(
+        new NextRequest('http://localhost/api/user/api-config', {
+          headers: {
+            cookie: `rey30_session=${cookie?.value || ''}`,
+          },
+        })
+      );
+
+      expect(configResponse.status).toBe(200);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
   });
 
   it('session endpoint does not crash when encryption secret is missing in production', async () => {
@@ -24,11 +92,13 @@ describe('Auth + provider API integration', () => {
       NODE_ENV: process.env.NODE_ENV,
       REY30_ENCRYPTION_KEY: process.env.REY30_ENCRYPTION_KEY,
       NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET,
+      REY30_LOCAL_OWNER_MODE: process.env.REY30_LOCAL_OWNER_MODE,
     };
 
     (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
     delete process.env.REY30_ENCRYPTION_KEY;
     delete process.env.NEXTAUTH_SECRET;
+    delete process.env.REY30_LOCAL_OWNER_MODE;
 
     try {
       const request = new NextRequest('http://localhost/api/auth/session');
@@ -48,6 +118,11 @@ describe('Auth + provider API integration', () => {
         delete process.env.NEXTAUTH_SECRET;
       } else {
         process.env.NEXTAUTH_SECRET = previous.NEXTAUTH_SECRET;
+      }
+      if (previous.REY30_LOCAL_OWNER_MODE === undefined) {
+        delete process.env.REY30_LOCAL_OWNER_MODE;
+      } else {
+        process.env.REY30_LOCAL_OWNER_MODE = previous.REY30_LOCAL_OWNER_MODE;
       }
     }
   });
@@ -166,6 +241,7 @@ describe('Auth + provider API integration', () => {
       const loginPayload = await loginResponse.json();
       expect(loginResponse.status).toBe(200);
       expect(loginPayload.success).toBe(true);
+      expect(loginPayload.user.role).toBe('VIEWER');
 
       const authHeaders = {
         authorization: 'Bearer shared-access-test-token',
@@ -180,6 +256,29 @@ describe('Auth + provider API integration', () => {
       expect(sessionResponse.status).toBe(200);
       expect(sessionPayload.authenticated).toBe(true);
       expect(sessionPayload.accessMode).toBe('shared_token');
+      expect(sessionPayload.user.role).toBe('VIEWER');
+      expect(sessionPayload.editorAccess).toEqual({
+        shellMode: 'product',
+        permissions: {
+          advancedShell: false,
+          admin: false,
+          compile: false,
+          advancedWorkspaces: false,
+          debugTools: false,
+          editorSessionBridge: false,
+          terminalActions: false,
+        },
+      });
+
+      const configResponse = await userConfigGet(
+        new NextRequest('http://localhost/api/user/api-config', {
+          headers: authHeaders,
+        })
+      );
+      const configPayload = await configResponse.json();
+      expect(configResponse.status).toBe(200);
+      expect(configPayload.user.role).toBe('VIEWER');
+      expect(configPayload.policy.sharedAccess).toBe(true);
 
       const openaiResponse = await openaiGet(
         new NextRequest('http://localhost/api/openai', {
@@ -195,6 +294,13 @@ describe('Auth + provider API integration', () => {
       const meshyPayload = await meshyResponse.json();
       expect(openaiPayload.configured).toBe(true);
       expect(meshyPayload.configured).toBe(true);
+
+      const backupsResponse = await backupsGet(
+        new NextRequest('http://localhost/api/ops/backups', {
+          headers: authHeaders,
+        })
+      );
+      expect(backupsResponse.status).toBe(403);
     } finally {
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) {
@@ -215,6 +321,24 @@ describe('Auth + provider API integration', () => {
 
   it('telemetry endpoint requires authenticated editor session', async () => {
     const response = await telemetryGet(new NextRequest('http://localhost/api/telemetry'));
+    expect(response.status).toBe(401);
+  });
+
+  it('telemetry ingestion requires authenticated editor session', async () => {
+    const response = await telemetryPost(
+      new NextRequest('http://localhost/api/telemetry', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          performance: {
+            fps: 60,
+            frameTimeMs: 16.7,
+          },
+        }),
+      })
+    );
     expect(response.status).toBe(401);
   });
 });

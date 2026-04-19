@@ -115,6 +115,159 @@ interface RenderableData {
   batchKey: string;
 }
 
+type GIMaterial = THREE.Material & {
+  emissive?: THREE.Color;
+  emissiveIntensity?: number;
+  color?: THREE.Color;
+  envMapIntensity?: number;
+  needsUpdate: boolean;
+  userData: Record<string, unknown>;
+};
+
+function isGIMaterial(material: THREE.Material): material is GIMaterial {
+  return 'userData' in material;
+}
+
+function collectGILights(scene: THREE.Scene): THREE.Light[] {
+  const lights: THREE.Light[] = [];
+  scene.traverse((object) => {
+    if (object instanceof THREE.Light && object.visible) {
+      lights.push(object);
+    }
+  });
+  return lights;
+}
+
+function computeSceneBounds(scene: THREE.Scene, fallbackCenter?: THREE.Vector3): THREE.Box3 {
+  const box = new THREE.Box3();
+  scene.traverse((object) => {
+    if (object instanceof THREE.Mesh && object.visible) {
+      box.expandByObject(object);
+    }
+  });
+
+  if (!box.isEmpty()) {
+    return box;
+  }
+
+  const center = fallbackCenter?.clone() ?? new THREE.Vector3();
+  return new THREE.Box3(center.clone().addScalar(-5), center.clone().addScalar(5));
+}
+
+function computeAverageBounceColor(scene: THREE.Scene): THREE.Color {
+  const color = new THREE.Color();
+  let samples = 0;
+
+  scene.traverse((object) => {
+    if (!(object instanceof THREE.Mesh) || !object.visible) return;
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    materials.forEach((material) => {
+      if (!isGIMaterial(material)) return;
+      if (material.color instanceof THREE.Color) {
+        color.add(material.color);
+        samples += 1;
+      } else if (material.emissive instanceof THREE.Color) {
+        color.add(material.emissive);
+        samples += 1;
+      }
+    });
+  });
+
+  if (samples === 0) {
+    return new THREE.Color(0.28, 0.29, 0.31);
+  }
+
+  return color.multiplyScalar(1 / samples);
+}
+
+function evaluateGIAtPoint(
+  point: THREE.Vector3,
+  normal: THREE.Vector3,
+  lights: THREE.Light[],
+  bounceColor: THREE.Color,
+  bounceCount: number,
+  intensity: number
+): THREE.Color {
+  const result = new THREE.Color(0.04, 0.04, 0.05);
+  const direction = new THREE.Vector3();
+  const targetPosition = new THREE.Vector3();
+
+  for (const light of lights) {
+    if (light instanceof THREE.AmbientLight) {
+      result.add(light.color.clone().multiplyScalar(light.intensity * 0.6));
+      continue;
+    }
+
+    if (light instanceof THREE.HemisphereLight) {
+      const skyFactor = THREE.MathUtils.clamp(normal.y * 0.5 + 0.5, 0, 1);
+      result.add(light.color.clone().multiplyScalar(light.intensity * skyFactor * 0.65));
+      result.add(light.groundColor.clone().multiplyScalar(light.intensity * (1 - skyFactor) * 0.45));
+      continue;
+    }
+
+    if (light instanceof THREE.DirectionalLight) {
+      light.getWorldDirection(direction);
+      const incoming = direction.clone().negate().normalize();
+      const diffuse = Math.max(normal.dot(incoming), 0);
+      result.add(light.color.clone().multiplyScalar(light.intensity * diffuse * 0.55));
+      continue;
+    }
+
+    if (light instanceof THREE.PointLight) {
+      const incoming = light.position.clone().sub(point);
+      const distance = Math.max(incoming.length(), 0.001);
+      incoming.normalize();
+      const diffuse = Math.max(normal.dot(incoming), 0);
+      const attenuation =
+        light.distance && light.distance > 0
+          ? Math.max(0, 1 - distance / light.distance)
+          : 1 / (1 + distance * 0.08);
+      result.add(light.color.clone().multiplyScalar(light.intensity * diffuse * attenuation * 0.7));
+      continue;
+    }
+
+    if (light instanceof THREE.SpotLight) {
+      const incoming = light.position.clone().sub(point);
+      const distance = Math.max(incoming.length(), 0.001);
+      const incomingDir = incoming.clone().normalize();
+      targetPosition.setFromMatrixPosition(light.target.matrixWorld);
+      direction.copy(targetPosition).sub(light.position).normalize();
+      const cone = Math.max(direction.dot(incomingDir.clone().negate()), 0);
+      const focus = light.angle > 0 ? Math.pow(cone, Math.max(1, 1 / light.angle)) : cone;
+      const diffuse = Math.max(normal.dot(incomingDir), 0);
+      const attenuation =
+        light.distance && light.distance > 0
+          ? Math.max(0, 1 - distance / light.distance)
+          : 1 / (1 + distance * 0.08);
+      result.add(light.color.clone().multiplyScalar(light.intensity * diffuse * focus * attenuation * 0.8));
+    }
+  }
+
+  const luminance = (result.r + result.g + result.b) / 3;
+  const bounce = bounceColor.clone().multiplyScalar(luminance * 0.12 * Math.max(1, bounceCount) * intensity);
+  result.add(bounce);
+  result.multiplyScalar(Math.max(0.15, intensity));
+  result.r = Math.min(2.5, result.r);
+  result.g = Math.min(2.5, result.g);
+  result.b = Math.min(2.5, result.b);
+  return result;
+}
+
+function sampleIrradianceVolume(
+  bounds: THREE.Box3,
+  data: Float32Array,
+  size: number,
+  point: THREE.Vector3
+): THREE.Color {
+  const relative = point.clone().sub(bounds.min);
+  const extent = bounds.getSize(new THREE.Vector3());
+  const px = THREE.MathUtils.clamp(Math.round((relative.x / (extent.x || 1)) * (size - 1)), 0, size - 1);
+  const py = THREE.MathUtils.clamp(Math.round((relative.y / (extent.y || 1)) * (size - 1)), 0, size - 1);
+  const pz = THREE.MathUtils.clamp(Math.round((relative.z / (extent.z || 1)) * (size - 1)), 0, size - 1);
+  const index = ((pz * size + py) * size + px) * 3;
+  return new THREE.Color(data[index], data[index + 1], data[index + 2]);
+}
+
 // ============================================
 // G-BUFFER CLASS
 // ============================================
@@ -2169,20 +2322,23 @@ export class GlobalIlluminationFeature implements RenderFeature {
   priority = 150;
   
   private renderer: THREE.WebGLRenderer | null = null;
+  private scene: THREE.Scene | null = null;
   private irradianceVolume: THREE.Data3DTexture | null = null;
   private material: THREE.ShaderMaterial | null = null;
+  private volumeSize: number = 16;
   
   // Parameters
   private intensity: number = 1.0;
   private bounceCount: number = 1;
   
-  initialize(renderer: THREE.WebGLRenderer): void {
+  initialize(renderer: THREE.WebGLRenderer, scene: THREE.Scene): void {
     this.renderer = renderer;
+    this.scene = scene;
     this.createIrradianceVolume();
   }
   
   private createIrradianceVolume(): void {
-    const size = 32;
+    const size = this.volumeSize;
     const data = new Float32Array(size * size * size * 3);
     
     // Initialize with ambient color
@@ -2200,16 +2356,151 @@ export class GlobalIlluminationFeature implements RenderFeature {
   
   render(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera): void {
     if (!this.enabled) return;
-    
-    // Light propagation volumes would be implemented here
-    // For now, this is a placeholder for the GI approximation
+
+    if (!this.irradianceVolume) {
+      this.createIrradianceVolume();
+    }
+    if (!this.irradianceVolume) return;
+
+    const bounds = computeSceneBounds(scene, camera.position);
+    const size = this.volumeSize;
+    const data = this.irradianceVolume.image.data as Float32Array;
+    const lights = collectGILights(scene);
+    const bounceColor = computeAverageBounceColor(scene);
+    const sceneCenter = bounds.getCenter(new THREE.Vector3());
+    const extent = bounds.getSize(new THREE.Vector3());
+    const xSpan = extent.x || 1;
+    const ySpan = extent.y || 1;
+    const zSpan = extent.z || 1;
+
+    for (let z = 0; z < size; z++) {
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const samplePoint = new THREE.Vector3(
+            bounds.min.x + (x / Math.max(1, size - 1)) * xSpan,
+            bounds.min.y + (y / Math.max(1, size - 1)) * ySpan,
+            bounds.min.z + (z / Math.max(1, size - 1)) * zSpan
+          );
+          const normal = samplePoint.clone().sub(sceneCenter).normalize();
+          if (normal.lengthSq() < 1e-4) normal.set(0, 1, 0);
+          const irradiance = evaluateGIAtPoint(
+            samplePoint,
+            normal,
+            lights,
+            bounceColor,
+            this.bounceCount,
+            this.intensity
+          );
+          const index = ((z * size + y) * size + x) * 3;
+          data[index] = irradiance.r;
+          data[index + 1] = irradiance.g;
+          data[index + 2] = irradiance.b;
+        }
+      }
+    }
+
+    this.irradianceVolume.needsUpdate = true;
+
+    let appliedMeshes = 0;
+    const averageIrradiance = new THREE.Color();
+
+    scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || !object.visible) return;
+      const center = new THREE.Box3().setFromObject(object).getCenter(new THREE.Vector3());
+      const sample = sampleIrradianceVolume(bounds, data, size, center);
+      averageIrradiance.add(sample);
+      appliedMeshes += 1;
+
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => {
+        if (!material || !isGIMaterial(material)) return;
+
+        const userData = material.userData || (material.userData = {});
+        if (!userData.__giOriginalStored) {
+          userData.__giOriginalStored = true;
+          userData.__giOriginalEmissive =
+            material.emissive instanceof THREE.Color ? material.emissive.clone() : new THREE.Color(0, 0, 0);
+          userData.__giOriginalEmissiveIntensity =
+            typeof material.emissiveIntensity === 'number' ? material.emissiveIntensity : 0;
+          userData.__giOriginalEnvMapIntensity =
+            typeof material.envMapIntensity === 'number' ? material.envMapIntensity : 1;
+        }
+
+        const baseEmissive = userData.__giOriginalEmissive instanceof THREE.Color
+          ? userData.__giOriginalEmissive
+          : new THREE.Color(0, 0, 0);
+        const baseEmissiveIntensity =
+          typeof userData.__giOriginalEmissiveIntensity === 'number' ? userData.__giOriginalEmissiveIntensity : 0;
+        const baseEnvMapIntensity =
+          typeof userData.__giOriginalEnvMapIntensity === 'number' ? userData.__giOriginalEnvMapIntensity : 1;
+
+        if (material.emissive instanceof THREE.Color) {
+          material.emissive.copy(baseEmissive).lerp(sample, 0.22);
+        }
+        if (typeof material.emissiveIntensity === 'number') {
+          const luminance = (sample.r + sample.g + sample.b) / 3;
+          material.emissiveIntensity = Math.max(baseEmissiveIntensity, luminance * 0.45);
+        }
+        if (typeof material.envMapIntensity === 'number') {
+          const luminance = (sample.r + sample.g + sample.b) / 3;
+          material.envMapIntensity = Math.max(baseEnvMapIntensity, 0.75 + luminance * 0.25);
+        }
+
+        material.needsUpdate = true;
+      });
+    });
+
+    if (appliedMeshes > 0) {
+      averageIrradiance.multiplyScalar(1 / appliedMeshes);
+    }
+
+    scene.userData.globalIllumination = {
+      enabled: true,
+      intensity: this.intensity,
+      bounceCount: this.bounceCount,
+      volumeSize: size,
+      lights: lights.length,
+      appliedMeshes,
+      averageColor: `#${averageIrradiance.getHexString()}`,
+      bounds: {
+        min: bounds.min.toArray(),
+        max: bounds.max.toArray(),
+      },
+      updatedAt: Date.now(),
+    };
   }
   
   setIntensity(intensity: number): void {
     this.intensity = intensity;
   }
+
+  setBounceCount(bounceCount: number): void {
+    this.bounceCount = Math.max(1, Math.min(4, Math.round(bounceCount)));
+  }
   
   dispose(): void {
+    this.scene?.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => {
+        if (!material || !isGIMaterial(material) || !material.userData?.__giOriginalStored) return;
+        const baseEmissive = material.userData.__giOriginalEmissive;
+        if (material.emissive instanceof THREE.Color && baseEmissive instanceof THREE.Color) {
+          material.emissive.copy(baseEmissive);
+        }
+        if (typeof material.emissiveIntensity === 'number' && typeof material.userData.__giOriginalEmissiveIntensity === 'number') {
+          material.emissiveIntensity = material.userData.__giOriginalEmissiveIntensity;
+        }
+        if (typeof material.envMapIntensity === 'number' && typeof material.userData.__giOriginalEnvMapIntensity === 'number') {
+          material.envMapIntensity = material.userData.__giOriginalEnvMapIntensity;
+        }
+        delete material.userData.__giOriginalStored;
+        delete material.userData.__giOriginalEmissive;
+        delete material.userData.__giOriginalEmissiveIntensity;
+        delete material.userData.__giOriginalEnvMapIntensity;
+        material.needsUpdate = true;
+      });
+    });
     this.irradianceVolume?.dispose();
     this.material?.dispose();
   }
@@ -2365,7 +2656,7 @@ export class RenderPipeline {
     // Shadow configuration
     const shadowSizeMap = { low: 1024, medium: 2048, high: 4096, ultra: 8192 };
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     
     // Anisotropic filtering
     const maxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();

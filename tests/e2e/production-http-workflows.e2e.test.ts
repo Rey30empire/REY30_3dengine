@@ -1,12 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import net from 'node:net';
 import path from 'node:path';
 import { rm } from 'node:fs/promises';
-import type { Readable } from 'node:stream';
 import { PrismaClient, UserRole } from '@prisma/client';
+import { createEditorProjectSaveData, type EditorProjectSaveState } from '@/engine/serialization';
 import { hashPassword } from '@/lib/security/password';
+import { createDefaultAutomationPermissions, createDefaultEditorState } from '@/store/editorStore.utils';
 import { resolveProductionEnv } from '../../scripts/production-env.mjs';
+import {
+  PRODUCTION_E2E_OUTPUT_SCRIPTS_ROOT,
+  startProductionLocalServer,
+  type StartedServer,
+} from './helpers/productionLocalServer';
 
 type CookieJar = Map<string, string>;
 
@@ -15,18 +19,87 @@ type JsonResponse<T = unknown> = {
   payload: T;
 };
 
-type StartedServer = {
-  baseUrl: string;
-  child: ChildProcessByStdio<null, Readable, Readable>;
-  stop: () => Promise<void>;
-  logs: () => string;
-};
-
-const HOST = '127.0.0.1';
-const START_TIMEOUT_MS = 240_000;
-const POLL_INTERVAL_MS = 1_000;
 const E2E_PASSWORD = 'E2EPass123!';
-const OUTPUT_SCRIPTS_ROOT = path.join(process.cwd(), 'output', 'e2e-http-scripts');
+const OUTPUT_SCRIPTS_ROOT = PRODUCTION_E2E_OUTPUT_SCRIPTS_ROOT;
+
+function createE2EProjectSave(projectName: string) {
+  const state: EditorProjectSaveState = {
+    projectName,
+    projectPath: `C:/Projects/${projectName.replace(/\s+/g, '')}`,
+    isDirty: true,
+    scenes: [
+      {
+        id: 'scene-1',
+        name: 'Main Scene',
+        entities: [],
+        rootEntities: [],
+        collections: [],
+        environment: {
+          skybox: 'studio',
+          ambientLight: { r: 0.5, g: 0.5, b: 0.5, a: 1 },
+          ambientIntensity: 1,
+          environmentIntensity: 1,
+          environmentRotation: 0,
+          directionalLightIntensity: 1.2,
+          directionalLightAzimuth: 45,
+          directionalLightElevation: 55,
+          advancedLighting: {
+            shadowQuality: 'high',
+            globalIllumination: { enabled: false, intensity: 1, bounceCount: 1 },
+            bakedLightmaps: { enabled: false },
+          },
+          fog: null,
+          postProcessing: {
+            bloom: { enabled: false, intensity: 0.5, threshold: 0.8, radius: 0.5 },
+            ssao: { enabled: false, radius: 0.5, intensity: 1, bias: 0.025 },
+            ssr: { enabled: false, intensity: 0.5, maxDistance: 100 },
+            colorGrading: {
+              enabled: false,
+              exposure: 1,
+              contrast: 1,
+              saturation: 1,
+              gamma: 2.2,
+              toneMapping: 'aces',
+              rendererExposure: 1,
+            },
+            vignette: { enabled: false, intensity: 0.5, smoothness: 0.5, roundness: 1 },
+          },
+        },
+        createdAt: new Date('2026-04-02T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-02T00:00:00.000Z'),
+      },
+    ],
+    activeSceneId: 'scene-1',
+    entities: new Map(),
+    assets: [],
+    engineMode: 'MODE_AI_FIRST',
+    aiMode: 'LOCAL',
+    aiEnabled: true,
+    editor: createDefaultEditorState(),
+    automationPermissions: createDefaultAutomationPermissions(),
+    profiler: {
+      fps: 60,
+      frameTime: 16.67,
+      cpuTime: 2,
+      gpuTime: 3,
+      memory: {
+        used: 32,
+        allocated: 64,
+        textures: 1,
+        meshes: 1,
+        audio: 0,
+      },
+      drawCalls: 1,
+      triangles: 12,
+      vertices: 24,
+    },
+    scribProfiles: new Map(),
+    activeScribEntityId: null,
+    scribInstances: new Map(),
+  };
+
+  return createEditorProjectSaveData(state, { markClean: true });
+}
 
 function createCookieJar(): CookieJar {
   return new Map();
@@ -98,144 +171,6 @@ async function fetchJson<T>(
   return {
     status: response.status,
     payload,
-  };
-}
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, HOST, () => {
-      const address = server.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('Unable to resolve a free port.'));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
-
-async function waitForReady(
-  baseUrl: string,
-  child: ChildProcessByStdio<null, Readable, Readable>,
-  getLogs: () => string
-) {
-  const deadline = Date.now() + START_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`production-local exited early with code ${child.exitCode}\n${getLogs()}`);
-    }
-
-    try {
-      const response = await fetch(`${baseUrl}/api/health/ready`, {
-        method: 'GET',
-        cache: 'no-store',
-      });
-      if (response.status === 200) {
-        const payload = await response.json();
-        if (payload?.ok === true && payload?.status === 'ready') {
-          return;
-        }
-      }
-    } catch {
-      // Retry until timeout.
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-
-  throw new Error(`Timed out waiting for ${baseUrl}/api/health/ready\n${getLogs()}`);
-}
-
-async function startProductionLocalServer(
-  root: string,
-  productionEnv: Record<string, string>
-): Promise<StartedServer> {
-  const port = await findFreePort();
-  const baseUrl = `http://${HOST}:${port}`;
-  const outputLogs: string[] = [];
-
-  const startArgs = ['scripts/start-production-local.mjs', '--skip-build'];
-  if (
-    process.env.CI === 'true' ||
-    process.env.REY30_PRODUCTION_LOCAL_SKIP_DOCKER === 'true'
-  ) {
-    startArgs.push('--skip-docker');
-  }
-
-  const child = spawn(process.execPath, startArgs, {
-    cwd: root,
-    env: {
-      ...process.env,
-      NODE_ENV: 'production',
-      HOSTNAME: HOST,
-      PORT: String(port),
-      DATABASE_URL: productionEnv.DATABASE_URL,
-      NEXTAUTH_SECRET: productionEnv.NEXTAUTH_SECRET,
-      REY30_ENCRYPTION_KEY: productionEnv.REY30_ENCRYPTION_KEY,
-      REY30_REGISTRATION_MODE: productionEnv.REY30_REGISTRATION_MODE,
-      REY30_REGISTRATION_INVITE_TOKEN: productionEnv.REY30_REGISTRATION_INVITE_TOKEN,
-      REY30_BOOTSTRAP_OWNER_TOKEN: productionEnv.REY30_BOOTSTRAP_OWNER_TOKEN,
-      REY30_ALLOW_OPEN_REGISTRATION_REMOTE:
-        productionEnv.REY30_ALLOW_OPEN_REGISTRATION_REMOTE || 'false',
-      REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION:
-        productionEnv.REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION || 'true',
-      REY30_ALLOWED_ORIGINS: `${baseUrl},http://localhost:${port}`,
-      REY30_SCRIPT_ROOT: OUTPUT_SCRIPTS_ROOT,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  const appendLogs = (prefix: string, buffer: Buffer) => {
-    outputLogs.push(`${prefix}${buffer.toString('utf8')}`);
-    if (outputLogs.length > 200) {
-      outputLogs.splice(0, outputLogs.length - 200);
-    }
-  };
-
-  child.stdout.on('data', (chunk) => appendLogs('', chunk));
-  child.stderr.on('data', (chunk) => appendLogs('[stderr] ', chunk));
-
-  await waitForReady(baseUrl, child, () => outputLogs.join(''));
-
-  return {
-    baseUrl,
-    child,
-    logs: () => outputLogs.join(''),
-    stop: async () => {
-      if (child.exitCode !== null) return;
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            // noop
-          }
-        }, 10_000);
-
-        child.once('exit', () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          clearTimeout(timeout);
-          resolve();
-        }
-      });
-    },
   };
 }
 
@@ -358,6 +293,14 @@ describe.sequential('Production HTTP workflows e2e', () => {
     const session = await fetchJson<{
       authenticated?: boolean;
       user?: { email: string; role: string };
+      editorAccess?: {
+        shellMode?: string;
+        permissions?: {
+          admin?: boolean;
+          advancedShell?: boolean;
+          terminalActions?: boolean;
+        };
+      };
     }>(
       startedServer.baseUrl,
       '/api/auth/session',
@@ -372,6 +315,10 @@ describe.sequential('Production HTTP workflows e2e', () => {
     expect(session.payload.authenticated).toBe(true);
     expect(session.payload.user?.email).toBe(viewerEmail);
     expect(session.payload.user?.role).toBe('VIEWER');
+    expect(session.payload.editorAccess?.shellMode).toBe('product');
+    expect(session.payload.editorAccess?.permissions?.advancedShell).toBe(false);
+    expect(session.payload.editorAccess?.permissions?.admin).toBe(false);
+    expect(session.payload.editorAccess?.permissions?.terminalActions).toBe(false);
     expect(cookieJar.get('rey30_csrf')).toMatch(/^[a-f0-9]{64}$/i);
 
     const assetsAfter = await fetchJson<{ assets?: unknown[] }>(
@@ -432,6 +379,14 @@ describe.sequential('Production HTTP workflows e2e', () => {
     const session = await fetchJson<{
       authenticated?: boolean;
       user?: { email: string; role: string };
+      editorAccess?: {
+        shellMode?: string;
+        permissions?: {
+          admin?: boolean;
+          advancedShell?: boolean;
+          terminalActions?: boolean;
+        };
+      };
     }>(
       startedServer.baseUrl,
       '/api/auth/session',
@@ -444,6 +399,10 @@ describe.sequential('Production HTTP workflows e2e', () => {
     expect(session.status).toBe(200);
     expect(session.payload.authenticated).toBe(true);
     expect(session.payload.user?.email).toBe(editorEmail);
+    expect(session.payload.editorAccess?.shellMode).toBe('advanced');
+    expect(session.payload.editorAccess?.permissions?.advancedShell).toBe(true);
+    expect(session.payload.editorAccess?.permissions?.admin).toBe(true);
+    expect(session.payload.editorAccess?.permissions?.terminalActions).toBe(false);
 
     const csrfToken = cookieJar.get('rey30_csrf') || '';
     expect(csrfToken).toMatch(/^[a-f0-9]{64}$/i);
@@ -600,6 +559,97 @@ describe.sequential('Production HTTP workflows e2e', () => {
     expect(
       compile.payload.diagnostics?.filter((item) => item.category === 'error') ?? []
     ).toHaveLength(0);
+
+    const remoteProjectSave = await fetchJson<{
+      success?: boolean;
+      projectKey?: string;
+      summary?: {
+        projectName?: string;
+        sceneCount?: number;
+      };
+    }>(
+      startedServer.baseUrl,
+      '/api/editor-project',
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Origin: origin,
+          'x-rey30-csrf': csrfToken,
+          'x-rey30-project': 'Bridge Project',
+        },
+        body: JSON.stringify({
+          slot: 'e2e-slot',
+          saveData: createE2EProjectSave('Bridge Project'),
+        }),
+      },
+      cookieJar
+    );
+    expect(remoteProjectSave.status).toBe(200);
+    expect(remoteProjectSave.payload.success).toBe(true);
+    expect(remoteProjectSave.payload.projectKey).toBe('bridge_project');
+    expect(remoteProjectSave.payload.summary?.projectName).toBe('Bridge Project');
+
+    const remoteProjectLoad = await fetchJson<{
+      active?: boolean;
+      projectKey?: string;
+      summary?: {
+        projectName?: string;
+      } | null;
+      saveData?: {
+        custom?: {
+          kind?: string;
+        };
+      };
+    }>(
+      startedServer.baseUrl,
+      '/api/editor-project?slot=e2e-slot&projectKey=bridge_project&includeSave=1',
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      },
+      cookieJar
+    );
+    expect(remoteProjectLoad.status).toBe(200);
+    expect(remoteProjectLoad.payload.active).toBe(true);
+    expect(remoteProjectLoad.payload.projectKey).toBe('bridge_project');
+    expect(remoteProjectLoad.payload.summary?.projectName).toBe('Bridge Project');
+    expect(remoteProjectLoad.payload.saveData?.custom?.kind).toBe('editor_project');
+
+    const buildResponse = await fetchJson<{
+      ok?: boolean;
+      target?: string;
+      source?: string;
+      projectKey?: string;
+      artifacts?: Array<{ kind?: string; path: string }>;
+    }>(
+      startedServer.baseUrl,
+      '/api/build',
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Origin: origin,
+          'x-rey30-csrf': csrfToken,
+          'x-rey30-project': 'Bridge Project',
+        },
+        body: JSON.stringify({
+          target: 'web',
+          slot: 'e2e-slot',
+        }),
+      },
+      cookieJar
+    );
+    expect(buildResponse.status).toBe(200);
+    expect(buildResponse.payload.ok).toBe(true);
+    expect(buildResponse.payload.target).toBe('web');
+    expect(buildResponse.payload.source).toBe('remote_editor_project');
+    expect(buildResponse.payload.projectKey).toBe('bridge_project');
+    expect(
+      buildResponse.payload.artifacts?.some((artifact) => artifact.path.endsWith('package-manifest.json'))
+    ).toBe(true);
 
     const scriptDelete = await fetchJson<{ success?: boolean }>(
       startedServer.baseUrl,

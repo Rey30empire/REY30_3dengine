@@ -38,3 +38,11 @@ class CharacterJobResultResponse(BaseModel):
     jobId: str
     packagePath: str
     payload: dict[str, Any]
+
+
+class CharacterBaseMeshResponse(BaseModel):
+    success: bool = True
+    mesh: dict[str, Any]
+    quality: dict[str, Any]
+    review: dict[str, Any]
+    metadata: dict[str, Any]

@@ -41,7 +41,7 @@ INVITE_PROFILE_OPENAI_API_KEY=replace_with_openai_key_for_shared_profile
 REY30_SHARED_ACCESS_TOKEN=replace_with_shared_access_token
 REY30_SHARED_ACCESS_EMAIL=shared-access@rey30.local
 REY30_SHARED_ACCESS_NAME=REY30 Shared Access
-REY30_SHARED_ACCESS_ROLE=OWNER
+REY30_SHARED_ACCESS_ROLE=VIEWER
 
 # Netlify Blobs
 REY30_SCRIPT_STORAGE_BACKEND=netlify-blobs
@@ -61,5 +61,6 @@ Notas:
 
 - No cambies `REY30_ENCRYPTION_KEY` / `APP_ENCRYPTION_KEY` a la ligera.
 - `INVITE_PROFILE_OPENAI_API_KEY` es la key que puedes rotar con `npx tsx scripts/rotate-invite-openai-key.ts`.
+- El token compartido siempre queda limitado a permisos de colaborador (`VIEWER`) aunque un env viejo intente elevarlo.
 - Si usas un solo nodo solo para prueba, puedes activar `REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION=true`.
 - Para revision rapida tambien tienes [NETLIFY_MINI_CHECKLIST.md](/C:/Users/rey30/REY30_3dengine/docs/NETLIFY_MINI_CHECKLIST.md).

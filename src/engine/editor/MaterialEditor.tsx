@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { loadClientAuthSession } from '@/lib/client-auth-session';
 import {
   Select,
   SelectContent,
@@ -17,14 +18,21 @@ import {
 } from '@/components/ui/select';
 import { useEngineStore } from '@/store/editorStore';
 import {
-  MATERIAL_PRESETS,
   MATERIAL_TEXTURE_SLOTS,
   getMaterialPreset,
   hexToMaterialColor,
   materialColorToHex,
   resolveEditorMaterial,
+  sanitizeMaterialDefinition,
+  type EditorMaterialDefinition,
   type EditorMaterialTextureSlot,
 } from './editorMaterials';
+import {
+  MATERIAL_PRESET_CATEGORY_OPTIONS,
+  MATERIAL_PRESET_REGISTRY,
+  getMaterialPresetCategoryLabel,
+  type MaterialPresetCategory,
+} from './materialPresetRegistry';
 import { buildAssetFileUrl } from './assetUrls';
 import {
   buildEntityThumbnailKey,
@@ -44,7 +52,7 @@ interface MaterialLibraryItem {
   path: string;
   projectKey: string;
   scope: 'project' | 'shared';
-  definition: Record<string, unknown>;
+  definition: EditorMaterialDefinition;
 }
 
 interface AuthSessionPayload {
@@ -52,13 +60,15 @@ interface AuthSessionPayload {
 }
 
 const MATERIAL_AUTH_HINT =
-  'Inicia sesion en Config APIs -> Usuario para guardar o cargar librerias de servidor.';
+  'Inicia sesion con una cuenta autorizada para guardar o cargar librerias del proyecto.';
+
+type MaterialPresetCategoryFilter = 'all' | MaterialPresetCategory;
 
 function parseMaterialLibraryItems(payload: unknown): MaterialLibraryItem[] {
   return Array.isArray((payload as { materials?: unknown[] })?.materials)
     ? ((payload as { materials: Array<Record<string, unknown>> }).materials ?? [])
         .map((entry) => {
-          const definition = asRecord(entry?.definition);
+          const definition = sanitizeMaterialDefinition(entry?.definition);
           const projectKey = typeof entry?.projectKey === 'string' ? entry.projectKey : '';
           const path = typeof entry?.path === 'string' ? entry.path : '';
           const name = typeof entry?.name === 'string' ? entry.name : 'material';
@@ -124,6 +134,8 @@ export function MaterialEditor() {
   const [libraryName, setLibraryName] = useState('material');
   const [libraryScope, setLibraryScope] = useState<'project' | 'shared'>('project');
   const [libraryMessage, setLibraryMessage] = useState('');
+  const [presetCategoryFilter, setPresetCategoryFilter] =
+    useState<MaterialPresetCategoryFilter>('all');
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionChecking, setSessionChecking] = useState(true);
 
@@ -151,18 +163,11 @@ export function MaterialEditor() {
 
     const refreshSession = async () => {
       setSessionChecking(true);
-      try {
-        const response = await fetch('/api/auth/session', { cache: 'no-store' });
-        const payload = (await response.json().catch(() => ({}))) as AuthSessionPayload;
-        if (cancelled) return;
-        setSessionReady(Boolean(payload.authenticated));
-      } catch {
-        if (cancelled) return;
-        setSessionReady(false);
-      } finally {
-        if (!cancelled) {
-          setSessionChecking(false);
-        }
+      const payload = await loadClientAuthSession();
+      if (cancelled) return;
+      setSessionReady(Boolean(payload.authenticated));
+      if (!cancelled) {
+        setSessionChecking(false);
       }
     };
 
@@ -185,15 +190,17 @@ export function MaterialEditor() {
   }, [projectName]);
 
   useEffect(() => {
-    if (sessionChecking) return;
-    if (!sessionReady) {
-      setRemoteTextureAssets([]);
-      return;
-    }
-
     let cancelled = false;
 
     const loadTextureAssets = async () => {
+      if (sessionChecking) return;
+      if (!sessionReady) {
+        if (!cancelled) {
+          setRemoteTextureAssets([]);
+        }
+        return;
+      }
+
       try {
         const response = await fetch('/api/assets', { cache: 'no-store' });
         if (!response.ok) return;
@@ -215,15 +222,17 @@ export function MaterialEditor() {
   }, [sessionChecking, sessionReady]);
 
   useEffect(() => {
-    if (sessionChecking) return;
-    if (!sessionReady) {
-      setLibraryMaterials([]);
-      return;
-    }
-
     let cancelled = false;
 
     const refresh = async () => {
+      if (sessionChecking) return;
+      if (!sessionReady) {
+        if (!cancelled) {
+          setLibraryMaterials([]);
+        }
+        return;
+      }
+
       try {
         const entries = await loadMaterialLibrary();
         if (!cancelled) {
@@ -268,7 +277,8 @@ export function MaterialEditor() {
 
   const materialPresetEntries = useMemo(
     () =>
-      MATERIAL_PRESETS.map((preset) => {
+      MATERIAL_PRESET_REGISTRY.map((registryEntry) => {
+        const preset = getMaterialPreset(registryEntry.id);
         const thumbnailEntity = createMeshRendererThumbnailEntity({
           idSeed: `material_preset_${preset.id}`,
           name: preset.name,
@@ -280,6 +290,7 @@ export function MaterialEditor() {
         });
         return {
           preset,
+          registryEntry,
           thumbnailEntity,
           thumbnailKey: buildEntityThumbnailKey(
             thumbnailEntity,
@@ -288,6 +299,16 @@ export function MaterialEditor() {
         };
       }),
     []
+  );
+
+  const visibleMaterialPresetEntries = useMemo(
+    () =>
+      materialPresetEntries.filter(({ registryEntry }) =>
+        presetCategoryFilter === 'all'
+          ? true
+          : registryEntry.category === presetCategoryFilter
+      ),
+    [materialPresetEntries, presetCategoryFilter]
   );
 
   const libraryMaterialEntries = useMemo(
@@ -429,11 +450,8 @@ export function MaterialEditor() {
     setLibraryMessage(`Material eliminado: ${entry.name}`);
   };
 
-  const applyLibraryMaterial = (definition: Record<string, unknown>) => {
-    const nextMaterialId =
-      typeof definition.id === 'string' && definition.id.trim().length > 0
-        ? definition.id
-        : materialId;
+  const applyLibraryMaterial = (definition: EditorMaterialDefinition) => {
+    const nextMaterialId = definition.id || materialId;
     const nextComponents = new Map(selectedEntity.components);
     nextComponents.set('MeshRenderer', {
       ...meshRenderer,
@@ -540,8 +558,43 @@ export function MaterialEditor() {
                 Reset preset
               </Button>
             </div>
+            <div className="mb-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_180px]">
+              <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                <p className="text-[11px] text-slate-300">
+                  {visibleMaterialPresetEntries.length} de {materialPresetEntries.length} presets
+                  visibles
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  Filtra por familia para navegar materiales reales del viewport.
+                </p>
+              </div>
+              <div>
+                <Label className="text-[11px] text-slate-500">Category</Label>
+                <Select
+                  value={presetCategoryFilter}
+                  onValueChange={(value) =>
+                    setPresetCategoryFilter(
+                      value === 'all' ? 'all' : (value as MaterialPresetCategory)
+                    )
+                  }
+                >
+                  <SelectTrigger className="mt-1 h-8 border-slate-700 bg-slate-950 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="border-slate-700 bg-slate-900">
+                    <SelectItem value="all">All categories</SelectItem>
+                    {MATERIAL_PRESET_CATEGORY_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
             <div className="mb-3 grid grid-cols-2 gap-2 xl:grid-cols-3">
-              {materialPresetEntries.map(({ preset, thumbnailEntity, thumbnailKey }) => (
+              {visibleMaterialPresetEntries.map(
+                ({ preset, registryEntry, thumbnailEntity, thumbnailKey }) => (
                 <Button
                   key={preset.id}
                   size="sm"
@@ -559,8 +612,12 @@ export function MaterialEditor() {
                     height={96}
                   />
                   <span className="w-full truncate text-left text-[11px]">{preset.name}</span>
+                  <span className="w-full truncate text-left text-[10px] text-slate-500">
+                    {getMaterialPresetCategoryLabel(registryEntry.category)}
+                  </span>
                 </Button>
-              ))}
+              )
+              )}
             </div>
             <Label className="text-[11px] text-slate-500">Material ID</Label>
             <Input

@@ -53,6 +53,7 @@ These do not belong in the Render web service. Keep them in GitHub Actions secre
 
 - `REY30_TRUST_PROXY=true`
   - Recommended on Render so IP-based security and rate limiting use Render's forwarded client IP.
+  - Only safe when the hosting proxy sanitizes forwarded IP headers before they reach the app.
 - `HOSTNAME=0.0.0.0`
   - Required so the standalone Next.js server binds to Render's public interface instead of loopback only.
 - `REY30_ENABLE_TERMINAL_API=false`

@@ -5,7 +5,7 @@ export interface GenerationTask {
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'canceled';
   progress: number;
   stage?: string;
-  provider?: 'meshy' | 'profile_a' | 'local_fallback';
+  deliveryPath?: 'accelerated' | 'compatible' | 'fallback';
   modelUrl?: string;
   thumbnailUrl?: string;
   error?: string;

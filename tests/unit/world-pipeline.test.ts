@@ -47,6 +47,11 @@ describe('world pipeline helpers', () => {
       directionalLightIntensity: 1.2,
       directionalLightAzimuth: 45,
       directionalLightElevation: 55,
+      advancedLighting: {
+        shadowQuality: 'medium' as const,
+        globalIllumination: { enabled: false, intensity: 1, bounceCount: 1 },
+        bakedLightmaps: { enabled: false },
+      },
       fog: null,
       postProcessing: {
         bloom: { enabled: false, intensity: 0.5, threshold: 0.8, radius: 0.5 },
@@ -70,6 +75,8 @@ describe('world pipeline helpers', () => {
     expect(nextEnvironment.skybox).toBe(environment.skybox);
     expect(nextEnvironment.postProcessing.ssr.enabled).toBe(true);
     expect(nextEnvironment.postProcessing.colorGrading.toneMapping).toBe('aces');
+    expect(nextEnvironment.advancedLighting?.globalIllumination.enabled).toBe(true);
+    expect(nextEnvironment.advancedLighting?.shadowQuality).toBe('ultra');
     expect(nextEnvironment.fog?.enabled).toBe(true);
   });
 

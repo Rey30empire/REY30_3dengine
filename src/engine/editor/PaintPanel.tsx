@@ -21,6 +21,7 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { loadClientAuthSession } from '@/lib/client-auth-session';
 import { useEngineStore } from '@/store/editorStore';
 import { buildAssetFileUrl } from './assetUrls';
 import {
@@ -83,7 +84,7 @@ type SelectionSummary =
 
 const TEXTURE_RESOLUTION_OPTIONS = [512, 1024, 2048, 4096];
 const PAINT_AUTH_HINT =
-  'Inicia sesion en Config APIs -> Usuario para guardar mapas pintados en Assets.';
+  'Inicia sesion con una cuenta autorizada para guardar mapas pintados en Assets.';
 
 const SLOT_LABELS: Record<EditorMaterialTextureSlot, string> = {
   albedo: 'Albedo',
@@ -278,20 +279,11 @@ export function PaintPanel() {
 
     const refreshSession = async () => {
       setSessionChecking(true);
-      try {
-        const response = await fetch('/api/auth/session', { cache: 'no-store' });
-        const payload = (await response.json().catch(() => ({}))) as {
-          authenticated?: boolean;
-        };
-        if (cancelled) return;
-        setSessionReady(Boolean(payload.authenticated));
-      } catch {
-        if (cancelled) return;
-        setSessionReady(false);
-      } finally {
-        if (!cancelled) {
-          setSessionChecking(false);
-        }
+      const payload = await loadClientAuthSession();
+      if (cancelled) return;
+      setSessionReady(Boolean(payload.authenticated));
+      if (!cancelled) {
+        setSessionChecking(false);
       }
     };
 
@@ -428,7 +420,9 @@ export function PaintPanel() {
           textureAssetName ||
           buildTexturePaintAssetName(selection.entityName, selection.textureSlot),
         entityName: selection.entityName,
+        entityId: selection.entityId,
         slot: selection.textureSlot,
+        resolution: editor.paintTextureResolution ?? 1024,
         projectName,
       });
 
@@ -1016,7 +1010,7 @@ export function PaintPanel() {
 
             {currentMode.startsWith('sculpt_') && (
               <Card className="space-y-3 border-slate-800 bg-slate-950 p-3">
-                <div className="text-xs text-slate-200">Sculpt pipeline</div>
+                <div className="text-xs text-slate-200">Flujo de sculpt</div>
                 <StatRow
                   label="Brush activo"
                   value={MODE_COPY[currentMode].title.replace('Sculpt ', '')}

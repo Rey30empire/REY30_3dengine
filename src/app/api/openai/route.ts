@@ -14,6 +14,7 @@ import {
   publicErrorResponse,
 } from '@/lib/security/public-error';
 import { fetchRemoteJson, RemoteFetchError } from '@/lib/security/remote-fetch';
+import { upsertProviderJobRecord } from '@/lib/server/external-integration-store';
 
 type OpenAIRequestBody = {
   action?: 'chat' | 'vision' | 'image' | 'video' | 'videoStatus';
@@ -89,6 +90,26 @@ function buildChatInput(messages: Array<{ role: string; content: string }>) {
   }));
 }
 
+function normalizeTaskStatus(raw: string): 'queued' | 'processing' | 'completed' | 'failed' | 'canceled' {
+  const value = raw.trim().toLowerCase();
+  if (!value) return 'processing';
+  if (value.includes('queue') || value.includes('pending')) return 'queued';
+  if (value.includes('cancel')) return 'canceled';
+  if (value.includes('fail') || value.includes('error')) return 'failed';
+  if (value.includes('complete') || value.includes('succeed') || value === 'done') return 'completed';
+  return 'processing';
+}
+
+function normalizeVideoUrl(payload: Record<string, any>): string {
+  if (typeof payload.url === 'string' && payload.url.trim()) {
+    return payload.url;
+  }
+  if (Array.isArray(payload.output) && typeof payload.output[0]?.url === 'string') {
+    return payload.output[0].url;
+  }
+  return '';
+}
+
 export async function GET(request: NextRequest) {
   const correlationId = createCorrelationId(request);
   const { searchParams } = new URL(request.url);
@@ -108,7 +129,7 @@ export async function GET(request: NextRequest) {
 
     if (!config.apiKey || !openai.enabled) {
       return NextResponse.json(
-        { error: 'OpenAI API key not configured', configured: false },
+        { configured: false, available: false },
         { status: 200 }
       );
     }
@@ -122,13 +143,36 @@ export async function GET(request: NextRequest) {
         },
       });
       await touchProviderUsage(user.id, 'openai');
-      return NextResponse.json(data || {}, { status: response.status });
+      const payload = (data || {}) as Record<string, any>;
+      const url = normalizeVideoUrl(payload);
+      const status = url
+        ? 'completed'
+        : normalizeTaskStatus(String(payload.status || payload.state || 'processing'));
+      await upsertProviderJobRecord({
+        provider: 'openai',
+        userId: user.id,
+        projectKey: normalizeProjectKey(request.headers.get('x-rey30-project')) || 'untitled_project',
+        action: 'video',
+        remoteTaskId: videoId,
+        status,
+        result: {
+          url: url || undefined,
+          rawStatus: String(payload.status || payload.state || ''),
+        },
+      });
+      return NextResponse.json(
+        {
+          success: response.ok,
+          status,
+          url: url || undefined,
+        },
+        { status: response.status }
+      );
     }
 
     return NextResponse.json({
       configured: true,
-      baseUrl: config.baseUrl,
-      model: openai.textModel,
+      available: true,
     });
   } catch (error) {
     if (error instanceof RemoteFetchError) {
@@ -142,7 +186,7 @@ export async function GET(request: NextRequest) {
     }
     return NextResponse.json({
       configured: false,
-      error: 'Usuario no autenticado. Inicia sesión para usar tu configuración BYOK.',
+      available: false,
     }, { status: 200 });
   }
 }
@@ -173,7 +217,7 @@ export async function POST(request: NextRequest) {
         metadata: { reason: 'missing_api_key_or_disabled' },
       });
       return NextResponse.json(
-        { error: 'OpenAI API key not configured' },
+        { error: 'El servicio no está disponible para esta sesión.' },
         { status: 401 }
       );
     }
@@ -213,7 +257,7 @@ export async function POST(request: NextRequest) {
         }
         return NextResponse.json(
           {
-            ...payload,
+            success: response.ok,
             text: extractResponseText(payload),
           },
           { status: response.status }
@@ -268,7 +312,7 @@ export async function POST(request: NextRequest) {
         }
         return NextResponse.json(
           {
-            ...payload,
+            success: response.ok,
             text: extractResponseText(payload),
           },
           { status: response.status }
@@ -313,7 +357,7 @@ export async function POST(request: NextRequest) {
 
         return NextResponse.json(
           {
-            ...payload,
+            success: response.ok,
             imageUrl: dataUrl,
             revisedPrompt: imageResult?.revised_prompt || '',
           },
@@ -350,7 +394,46 @@ export async function POST(request: NextRequest) {
             }),
           ]);
         }
-        return NextResponse.json(payload, { status: response.status });
+        const taskId =
+          typeof payload.id === 'string'
+            ? payload.id
+            : typeof payload.taskId === 'string'
+              ? payload.taskId
+              : typeof payload.videoId === 'string'
+                ? payload.videoId
+                : '';
+        const url = normalizeVideoUrl(payload);
+        const status = url
+          ? 'completed'
+          : normalizeTaskStatus(String(payload.status || payload.state || 'queued'));
+        if (response.ok && taskId) {
+          await upsertProviderJobRecord({
+            provider: 'openai',
+            userId: user.id,
+            projectKey: projectKey || 'untitled_project',
+            action: 'video',
+            remoteTaskId: taskId,
+            status,
+            requestSummary: {
+              model: body.model || openai.videoModel || 'sora-2',
+              duration: body.duration || 5,
+              size: body.size || openai.videoSize || '1280x720',
+            },
+            result: {
+              url: url || undefined,
+              rawStatus: String(payload.status || payload.state || ''),
+            },
+          });
+        }
+        return NextResponse.json(
+          {
+            success: response.ok,
+            status,
+            taskId: taskId || undefined,
+            url: url || undefined,
+          },
+          { status: response.status }
+        );
       }
 
       default:

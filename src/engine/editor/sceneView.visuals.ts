@@ -31,6 +31,11 @@ import {
   parseMeshModifierStack,
 } from './meshModifiers';
 import { buildWeightPreviewColors } from './paintMesh';
+import {
+  buildTerrainVisualSignature,
+  normalizeTerrainData,
+} from '@/engine/scene/terrainAuthoring';
+import { TerrainGenerator } from '@/engine/scene/TerrainGenerator';
 
 export const STORE_OBJECT_PREFIX = 'store_entity:';
 
@@ -544,11 +549,14 @@ function createCharacterBuilderAssemblyVisual(data: CharacterBuilderSceneData) {
 }
 
 export function getEntityVisualKind(entity: Entity): string {
+  const meshRendererData = asRecord(entity.components.get('MeshRenderer')?.data);
+  const characterBuilderData = readCharacterBuilderSceneData(meshRendererData);
   if (entity.components.has('Light')) return 'light';
   if (entity.components.has('Camera')) return 'camera';
   if (entity.components.has('Terrain')) return 'terrain';
   if (entity.components.has('Weapon')) return 'weapon';
   if (entity.tags.includes('enemy')) return 'enemy';
+  if (characterBuilderData) return 'generic';
   if (entity.tags.includes('player') || entity.components.has('PlayerController')) return 'player';
   return 'generic';
 }
@@ -900,6 +908,9 @@ export function getEntityVisualSignature(
   }
 ): string {
   const visualKind = getEntityVisualKind(entity);
+  if (visualKind === 'terrain') {
+    return buildTerrainVisualSignature(entity.components.get('Terrain')?.data);
+  }
   if (visualKind !== 'generic') {
     return visualKind;
   }
@@ -973,15 +984,23 @@ export function createEntityVisual(
   }
 
   if (visualKind === 'terrain') {
-    const terrainData = asRecord(entity.components.get('Terrain')?.data);
-    const width = typeof terrainData?.width === 'number' ? terrainData.width : 32;
-    const depth = typeof terrainData?.depth === 'number' ? terrainData.depth : 32;
-    const terrain = new THREE.Mesh(
-      new THREE.BoxGeometry(Math.max(2, width), 0.4, Math.max(2, depth)),
-      new THREE.MeshStandardMaterial({ color: 0x3d5f3b, roughness: 0.85, metalness: 0.05 })
+    const terrainData = normalizeTerrainData(entity.components.get('Terrain')?.data);
+    const terrainGenerator = new TerrainGenerator(terrainData.seed ?? 0);
+    const terrain = terrainGenerator.createTerrainMesh(
+      terrainData.width,
+      terrainData.depth,
+      terrainData.segments ?? 2,
+      terrainData.heightmap,
+      1
     );
+    if (terrain.material instanceof THREE.MeshStandardMaterial) {
+      terrain.material.roughness = 0.92;
+      terrain.material.metalness = 0.04;
+      terrain.material.flatShading = false;
+      terrain.material.needsUpdate = true;
+    }
     terrain.receiveShadow = true;
-    terrain.castShadow = false;
+    terrain.castShadow = true;
     return terrain;
   }
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useActiveScene, useEngineStore } from '@/store/editorStore';
+import { resolveAdvancedLightingSettings } from '@/types/engine';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -53,6 +54,7 @@ export function WorldSettingsPanel() {
     setViewportCameraEntity,
     setViewportFov,
     setCameraSpeed,
+    requestLightingBake,
   } = useEngineStore();
 
   if (!activeScene) {
@@ -109,6 +111,36 @@ export function WorldSettingsPanel() {
           ...activeScene.environment.postProcessing[key],
           ...patch,
         },
+      },
+    });
+  };
+
+  const advancedLighting = resolveAdvancedLightingSettings(
+    activeScene.environment.advancedLighting
+  );
+
+  const updateAdvancedLighting = (
+    patch: Omit<Partial<typeof advancedLighting>, 'globalIllumination' | 'bakedLightmaps'> & {
+      globalIllumination?: Partial<typeof advancedLighting.globalIllumination>;
+      bakedLightmaps?: Partial<typeof advancedLighting.bakedLightmaps>;
+    }
+  ) => {
+    updateEnvironment({
+      advancedLighting: {
+        ...advancedLighting,
+        ...patch,
+        globalIllumination: patch.globalIllumination
+          ? {
+              ...advancedLighting.globalIllumination,
+              ...patch.globalIllumination,
+            }
+          : advancedLighting.globalIllumination,
+        bakedLightmaps: patch.bakedLightmaps
+          ? {
+              ...advancedLighting.bakedLightmaps,
+              ...patch.bakedLightmaps,
+            }
+          : advancedLighting.bakedLightmaps,
       },
     });
   };
@@ -414,6 +446,141 @@ export function WorldSettingsPanel() {
                 max={85}
                 step={1}
               />
+            </div>
+          </section>
+
+          <section className="space-y-3 rounded-lg border border-slate-700/60 bg-slate-900/35 p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">
+                  Lighting Quality
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Controla sombras, rebote global y horneado aproximado del viewport.
+                </p>
+              </div>
+              <span className="text-[11px] text-slate-500">Viewport pro</span>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs text-slate-400">Shadow Quality</Label>
+              <Select
+                value={advancedLighting.shadowQuality}
+                onValueChange={(value: 'low' | 'medium' | 'high' | 'ultra') =>
+                  updateAdvancedLighting({ shadowQuality: value })
+                }
+              >
+                <SelectTrigger className="h-8 bg-slate-900 border-slate-700">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-slate-700">
+                  <SelectItem value="low">Low / Preview</SelectItem>
+                  <SelectItem value="medium">Medium / Balanced</SelectItem>
+                  <SelectItem value="high">High / Studio</SelectItem>
+                  <SelectItem value="ultra">Ultra / Hero</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="rounded-md border border-slate-700/60 bg-slate-950/40 p-2">
+              <div className="mb-2 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                    Global Illumination
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Rebote de luz aproximado para dar más cuerpo a materiales y escena.
+                  </p>
+                </div>
+                <Switch
+                  checked={advancedLighting.globalIllumination.enabled}
+                  onCheckedChange={(checked) =>
+                    updateAdvancedLighting({
+                      globalIllumination: { enabled: checked },
+                    })
+                  }
+                />
+              </div>
+
+              {advancedLighting.globalIllumination.enabled && (
+                <div className="space-y-2">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-slate-400">GI Intensity</Label>
+                      <span className="text-[11px] text-slate-500">
+                        {advancedLighting.globalIllumination.intensity.toFixed(2)}
+                      </span>
+                    </div>
+                    <Slider
+                      value={[advancedLighting.globalIllumination.intensity]}
+                      onValueChange={([value]) =>
+                        updateAdvancedLighting({
+                          globalIllumination: { intensity: value },
+                        })
+                      }
+                      min={0.25}
+                      max={1.75}
+                      step={0.05}
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-slate-400">Bounce Count</Label>
+                      <span className="text-[11px] text-slate-500">
+                        {advancedLighting.globalIllumination.bounceCount}
+                      </span>
+                    </div>
+                    <Slider
+                      value={[advancedLighting.globalIllumination.bounceCount]}
+                      onValueChange={([value]) =>
+                        updateAdvancedLighting({
+                          globalIllumination: {
+                            bounceCount: Math.max(1, Math.min(3, Math.round(value))),
+                          },
+                        })
+                      }
+                      min={1}
+                      max={3}
+                      step={1}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md border border-slate-700/60 bg-slate-950/40 p-2">
+              <div className="mb-2 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                    Baked Lightmaps
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Hornea luz aproximada en texturas para bloquear el look del escenario.
+                  </p>
+                </div>
+                <Switch
+                  checked={advancedLighting.bakedLightmaps.enabled}
+                  onCheckedChange={(checked) =>
+                    updateAdvancedLighting({
+                      bakedLightmaps: { enabled: checked },
+                    })
+                  }
+                />
+              </div>
+
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 w-full border-slate-700 bg-slate-900 text-xs text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!advancedLighting.bakedLightmaps.enabled}
+                onClick={() => requestLightingBake(activeScene.id)}
+              >
+                Hornear ahora
+              </Button>
+              <p className="mt-2 text-[11px] text-slate-500">
+                Repite el horneado cuando cambien luces, materiales base o geometría principal.
+              </p>
             </div>
           </section>
 

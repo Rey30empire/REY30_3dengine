@@ -28,7 +28,7 @@ describe('Client IP trust model', () => {
     expect(getClientIp(request)).toBeNull();
   });
 
-  it('uses x-real-ip when proxy trust is disabled', () => {
+  it('does not trust x-real-ip when proxy trust is disabled', () => {
     const request = new NextRequest('http://localhost/api/test', {
       headers: {
         'x-real-ip': '198.51.100.24',
@@ -36,7 +36,7 @@ describe('Client IP trust model', () => {
       },
     });
 
-    expect(getClientIp(request)).toBe('198.51.100.24');
+    expect(getClientIp(request)).toBeNull();
   });
 
   it('uses x-forwarded-for first when proxy trust is enabled', () => {
@@ -50,5 +50,16 @@ describe('Client IP trust model', () => {
 
     expect(trustProxyEnabled()).toBe(true);
     expect(getClientIp(request)).toBe('203.0.113.10');
+  });
+
+  it('uses x-real-ip as fallback when proxy trust is enabled', () => {
+    process.env.REY30_TRUST_PROXY = 'true';
+    const request = new NextRequest('http://localhost/api/test', {
+      headers: {
+        'x-real-ip': '198.51.100.24',
+      },
+    });
+
+    expect(getClientIp(request)).toBe('198.51.100.24');
   });
 });

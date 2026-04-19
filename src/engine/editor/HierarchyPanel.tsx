@@ -48,6 +48,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { createDefaultAudioSourceData } from '@/engine/audio/audioSourceData';
 import { EntityFactory } from '@/engine/core/ECS';
 import type { Entity, SceneCollection } from '@/types/engine';
 import { cn } from '@/lib/utils';
@@ -190,13 +191,7 @@ export function HierarchyPanel() {
         entity.components.set('AudioSource', {
           id: crypto.randomUUID(),
           type: 'AudioSource',
-          data: {
-            clip: null,
-            volume: 1,
-            loop: false,
-            playOnStart: false,
-            spatialBlend: 1,
-          },
+          data: createDefaultAudioSourceData() as unknown as Record<string, unknown>,
           enabled: true,
         });
         break;

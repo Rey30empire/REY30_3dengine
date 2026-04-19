@@ -7,8 +7,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { NodeIO, type Document } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
+import { v4 as uuidv4 } from 'uuid';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 
 type Target = 'gltf' | 'fbx' | 'unity' | 'unreal' | 'blender';
@@ -38,6 +40,42 @@ async function ensureOutDir(target: Target) {
   const root = process.env.REY30_EXPORT_ROOT || path.join(process.cwd(), 'download', 'exports', target);
   await fs.mkdir(root, { recursive: true });
   return root;
+}
+
+function sanitizeSegment(value: string) {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'export'
+  );
+}
+
+function toResponsePath(filePath: string) {
+  const relative = path.relative(process.cwd(), filePath).replace(/\\/g, '/');
+  return relative.startsWith('..') ? filePath.replace(/\\/g, '/') : relative;
+}
+
+async function createExportWorkspace(target: Target, baseName: string) {
+  const root = await ensureOutDir(target);
+  const workspaceId = `${Date.now()}-${uuidv4().slice(0, 8)}`;
+  const dir = path.join(root, `${sanitizeSegment(baseName)}-${workspaceId}`);
+  await fs.mkdir(dir, { recursive: true });
+  return { root, dir, workspaceId };
+}
+
+async function describeFile(filePath: string) {
+  const stats = await fs.stat(filePath);
+  if (stats.size <= 0) {
+    throw new Error('El artefacto exportado está vacío.');
+  }
+  const checksum = createHash('sha256').update(await fs.readFile(filePath)).digest('hex');
+  return {
+    size: stats.size,
+    checksum,
+  };
 }
 
 function isInsideRoot(root: string, candidate: string): boolean {
@@ -202,15 +240,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'inputPath no existe' }, { status: 404 });
     }
 
-    const outDir = await ensureOutDir(target);
     const baseName = path.parse(inputAbs).name;
+    const exportWorkspace = await createExportWorkspace(target, baseName);
     const inputExt = path.extname(inputAbs).toLowerCase();
 
     let exportFile = '';
     let conversionNotes: string[] = [];
 
     if (target === 'fbx') {
-      exportFile = path.join(outDir, `${baseName}.fbx`);
+      exportFile = path.join(exportWorkspace.dir, `${baseName}.fbx`);
       if (inputExt === '.fbx' && scale === 1 && axis === 'y_up') {
         await fs.copyFile(inputAbs, exportFile);
         conversionNotes.push('Entrada ya en FBX, copiado sin cambios.');
@@ -270,15 +308,19 @@ export async function POST(request: NextRequest) {
       }
 
       const ext = embedTextures ? '.glb' : '.gltf';
-      exportFile = path.join(outDir, `${baseName}${ext}`);
+      exportFile = path.join(exportWorkspace.dir, `${baseName}${ext}`);
       const { gltfPath, notes } = await convertInputToGltf(inputAbs);
       await convertWithGltfTransform(gltfPath, exportFile, axis, scale);
       conversionNotes.push(...notes, 'Procesado con gltf-transform.');
     }
 
+    const outputFile = await describeFile(exportFile);
+
     const manifest = {
-      source: path.relative(process.cwd(), inputAbs).replace(/\\/g, '/'),
-      output: path.relative(process.cwd(), exportFile).replace(/\\/g, '/'),
+      source: toResponsePath(inputAbs),
+      output: toResponsePath(exportFile),
+      workspaceId: exportWorkspace.workspaceId,
+      workspacePath: toResponsePath(exportWorkspace.dir),
       target,
       preset,
       axis,
@@ -289,16 +331,20 @@ export async function POST(request: NextRequest) {
       stub: false,
       notes: conversionNotes.join(' '),
       lods: defaultPresetConfig[preset].lods,
+      outputSize: outputFile.size,
+      outputChecksum: outputFile.checksum,
     };
 
-    const manifestPath = path.join(outDir, `${baseName}.${target}.manifest.json`);
+    const manifestPath = path.join(exportWorkspace.dir, `${baseName}.${target}.manifest.json`);
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
 
     return NextResponse.json({
       success: true,
       summary: `Export ${target} (${preset}) generado`,
-      exportPath: path.relative(process.cwd(), exportFile).replace(/\\/g, '/'),
-      manifest: path.relative(process.cwd(), manifestPath).replace(/\\/g, '/'),
+      exportPath: toResponsePath(exportFile),
+      manifest: toResponsePath(manifestPath),
+      workspaceId: exportWorkspace.workspaceId,
+      workspacePath: toResponsePath(exportWorkspace.dir),
       stub: false,
     });
   } catch (error) {

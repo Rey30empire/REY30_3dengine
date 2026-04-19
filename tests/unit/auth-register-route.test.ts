@@ -103,6 +103,7 @@ describe('Auth register route', () => {
         action: 'auth.register',
         status: 'denied',
         metadata: { reason: 'invalid_payload' },
+        durability: 'critical',
       })
     );
   });
@@ -133,6 +134,7 @@ describe('Auth register route', () => {
           reason: 'registration_policy_blocked',
           mode: 'invite_only',
         },
+        durability: 'critical',
       })
     );
   });
@@ -199,6 +201,7 @@ describe('Auth register route', () => {
         action: 'auth.register',
         status: 'allowed',
         metadata: { role: 'VIEWER' },
+        durability: 'critical',
       })
     );
   });
@@ -237,6 +240,7 @@ describe('Auth register route', () => {
         action: 'auth.register',
         status: 'denied',
         metadata: { reason: 'email_exists' },
+        durability: 'critical',
       })
     );
   });
@@ -310,6 +314,7 @@ describe('Auth register route', () => {
       expect.objectContaining({
         action: 'auth.register',
         status: 'error',
+        durability: 'critical',
       })
     );
   });

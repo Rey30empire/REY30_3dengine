@@ -106,6 +106,22 @@ export function resolveAICommandIntent(command: string): AICommandIntent {
     mentionsSceneIntent &&
     lowerCommand.split(/\s+/).filter(Boolean).length <= 5;
 
+  const mentionsWorldScope = [
+    'mundo',
+    'world',
+    'escena',
+    'scene',
+    'mapa',
+    'nivel',
+    'level',
+    'juego',
+    'game',
+    'gameplay',
+    'proyecto',
+    'project',
+    'starter',
+  ].some((keyword) => lowerCommand.includes(keyword));
+
   const explicitAssetIntent =
     lowerCommand.includes('asset') ||
     lowerCommand.includes('archivo') ||
@@ -115,7 +131,10 @@ export function resolveAICommandIntent(command: string): AICommandIntent {
     lowerCommand.includes('export');
 
   const wantsDirectSceneAction =
-    (hasActionVerb && mentionsSceneIntent && !explicitAssetIntent && !wants3D) ||
+    (hasActionVerb &&
+      mentionsSceneIntent &&
+      !explicitAssetIntent &&
+      (!wants3D || mentionsWorldScope)) ||
     looksLikeShortSceneOrder;
 
   const hasGameKeyword = [

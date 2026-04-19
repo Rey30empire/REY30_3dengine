@@ -1,6 +1,8 @@
 import { cp, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { loadWorkspaceEnv } from './env-utils.mjs';
+import { applyResolvedLocalPostgresEnv } from './local-postgres.mjs';
 import {
   pathExists,
   pathNeedsShadow,
@@ -42,25 +44,93 @@ async function syncBuildBack(shadowRoot, sourceRoot) {
   }
 }
 
-async function buildInCurrentRoot(root) {
+async function restorePrismaClient(root, attempts = 5) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      runCommand('pnpm', ['exec', 'prisma', 'generate'], { cwd: root });
+      if (attempt > 1) {
+        process.stdout.write(`Prisma client restore succeeded on retry ${attempt}.\n`);
+      }
+      return;
+    } catch (error) {
+      if (attempt === attempts) {
+        throw new Error(
+          `Unable to restore the full Prisma client after --no-engine fallback. Run "pnpm run db:generate" before DB-backed tests. Last error: ${String(
+            error?.message || error
+          )}`
+        );
+      }
+
+      const waitMs = attempt * 750;
+      process.stdout.write(
+        `Retrying Prisma client restore in ${waitMs}ms (${attempt}/${attempts - 1} retries used)...\n`
+      );
+      await delay(waitMs);
+    }
+  }
+}
+
+async function buildInCurrentRoot(root, { restorePrismaAfterFallback = root === process.cwd() } = {}) {
+  let fallbackUsed = false;
+  let buildError = null;
+  const forceNoEngineFallback =
+    String(process.env.REY30_FORCE_PRISMA_NO_ENGINE_FALLBACK || '')
+      .trim()
+      .toLowerCase() === 'true';
+
   try {
+    if (forceNoEngineFallback) {
+      throw new Error('Forced --no-engine fallback for stability validation.');
+    }
     runCommand('pnpm', ['exec', 'prisma', 'generate'], { cwd: root });
   } catch (error) {
-    if (process.platform !== 'win32') {
+    if (!forceNoEngineFallback && process.platform !== 'win32') {
       throw error;
     }
 
-    process.stdout.write(
-      'prisma generate hit a Windows file lock; retrying local build with --no-engine.\n'
-    );
+    if (forceNoEngineFallback) {
+      process.stdout.write('Forcing prisma generate --no-engine fallback for stability validation.\n');
+    } else {
+      process.stdout.write(
+        'prisma generate hit a Windows file lock; retrying local build with --no-engine.\n'
+      );
+    }
     runCommand('pnpm', ['exec', 'prisma', 'generate', '--no-engine'], { cwd: root });
+    fallbackUsed = true;
   }
-  runCommand('pnpm', ['exec', 'next', 'build', '--webpack'], { cwd: root });
-  runCommand('node', ['scripts/prepare-standalone.mjs'], { cwd: root });
+
+  try {
+    runCommand('pnpm', ['exec', 'next', 'build', '--webpack'], { cwd: root });
+    runCommand('node', ['scripts/prepare-standalone.mjs'], { cwd: root });
+  } catch (error) {
+    buildError = error;
+  } finally {
+    if (fallbackUsed && restorePrismaAfterFallback) {
+      process.stdout.write(
+        'Restoring the full Prisma client after --no-engine fallback so later DB-backed tests stay deterministic.\n'
+      );
+      try {
+        await restorePrismaClient(root);
+      } catch (restoreError) {
+        if (buildError) {
+          throw new AggregateError(
+            [buildError, restoreError],
+            'Build failed and Prisma client restore also failed.'
+          );
+        }
+        throw restoreError;
+      }
+    }
+  }
+
+  if (buildError) {
+    throw buildError;
+  }
 }
 
 async function main() {
   const root = process.cwd();
+  await applyResolvedLocalPostgresEnv(process.env);
   if (pathNeedsShadow(root)) {
     const shadowRoot = await prepareShadowWorkspace({
       root,
@@ -73,7 +143,7 @@ async function main() {
       ensurePrisma: true,
     });
     process.stdout.write(`Detected '#' in path. Building in shadow workspace:\n${shadowRoot}\n`);
-    await buildInCurrentRoot(shadowRoot);
+    await buildInCurrentRoot(shadowRoot, { restorePrismaAfterFallback: false });
     await syncBuildBack(shadowRoot, root);
     return;
   }

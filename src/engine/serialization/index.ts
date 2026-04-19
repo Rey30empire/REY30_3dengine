@@ -23,3 +23,19 @@ export {
   type SettingsSaveData,
   type CheckpointData,
 } from './SaveSystem';
+
+export {
+  DEFAULT_EDITOR_PROJECT_SAVE_SLOT,
+  createEditorProjectSaveData,
+  createLoadedEditorProjectPatch,
+  getEditorProjectSaveSummary,
+  isEditorProjectSaveData,
+  loadEditorProjectFromSlot,
+  restoreEditorProjectSaveData,
+  saveEditorProjectToSlot,
+  summarizeEditorProjectSaveData,
+  type EditorProjectSaveData,
+  type EditorProjectRestoreState,
+  type EditorProjectSaveState,
+  type EditorProjectSaveSummary,
+} from './editorProjectSave';

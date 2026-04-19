@@ -32,7 +32,7 @@ MESHY_API_KEY=replace_with_your_meshy_key
 REY30_SHARED_ACCESS_TOKEN=replace_with_shared_access_token
 REY30_SHARED_ACCESS_EMAIL=shared-access@rey30.local
 REY30_SHARED_ACCESS_NAME=REY30 Shared Access
-REY30_SHARED_ACCESS_ROLE=OWNER
+REY30_SHARED_ACCESS_ROLE=VIEWER
 ```
 
 Optional bootstrap/fallback for the shared invite OpenAI profile:

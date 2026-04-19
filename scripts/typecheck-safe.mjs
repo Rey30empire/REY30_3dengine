@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadWorkspaceEnv } from './env-utils.mjs';
 import {
@@ -60,6 +60,16 @@ async function writeGeneratedTsconfig(root, distDir) {
   return generatedPath;
 }
 
+async function maybeGeneratePrismaClient(root, extraEnv = {}) {
+  try {
+    await access(path.join(root, 'prisma', 'schema.prisma'));
+  } catch {
+    return;
+  }
+
+  run(process.execPath, ['scripts/prisma-db-safe.mjs', 'generate'], root, extraEnv);
+}
+
 async function main() {
   const originalRoot = process.cwd();
   const root = pathNeedsShadow(originalRoot)
@@ -87,12 +97,9 @@ async function main() {
     () => undefined
   );
 
-  try {
-    run('pnpm', ['exec', 'next', 'typegen'], root, sharedEnv);
-    run('pnpm', ['exec', 'tsc', '--noEmit', '-p', generatedTsconfigPath], root, sharedEnv);
-  } finally {
-    await rm(generatedTsconfigPath, { force: true }).catch(() => undefined);
-  }
+  await maybeGeneratePrismaClient(root, sharedEnv);
+  run('pnpm', ['exec', 'next', 'typegen'], root, sharedEnv);
+  run('pnpm', ['exec', 'tsc', '--noEmit', '-p', generatedTsconfigPath], root, sharedEnv);
 }
 
 main().catch((error) => {

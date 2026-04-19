@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Bot,
   Box,
+  BookOpen,
   CheckCircle2,
   Cloud,
   Eye,
@@ -41,9 +42,17 @@ import {
   type LocalAIConfig,
   type LocalProviderId,
 } from '@/lib/local-ai-config';
+import {
+  getEditorShortcutConfig,
+  saveEditorShortcutConfig,
+  type EditorShortcutConfig,
+} from '@/lib/editor-shortcuts';
+import { loadClientAuthSession } from '@/lib/client-auth-session';
 import { cn } from '@/lib/utils';
 import { useEngineStore } from '@/store/editorStore';
+import { EditorShortcutSettings } from './EditorShortcutSettings';
 import { UsageFinOpsPanel } from './UsageFinOpsPanel';
+import { UsageGuideCopilotPanel } from './UsageGuideCopilotPanel';
 import { MODE_AUTO_GUIDE, SCRIB_HYBRID_GUIDE, SQLITE_TO_SQL_PLAN } from './autoGuide';
 
 type ProviderStatus = {
@@ -60,6 +69,13 @@ type SessionUser = {
   role: 'OWNER' | 'EDITOR' | 'VIEWER';
 };
 
+type SessionPolicy = {
+  localOwnerMode?: boolean;
+  sharedAccess?: boolean;
+  byok?: boolean;
+  note?: string;
+};
+
 type SecretState = Record<'openai' | 'meshy' | 'runway' | 'ollama' | 'vllm' | 'llamacpp', boolean>;
 
 type SecurityLogEntry = {
@@ -70,6 +86,13 @@ type SecurityLogEntry = {
   ipAddress?: string | null;
   createdAt: string;
   metadata?: string | null;
+};
+
+type ConfigPayload = {
+  apiConfig?: APIConfig;
+  localConfig?: LocalAIConfig;
+  hasSecrets?: SecretState;
+  providerStatuses?: ProviderStatusMap;
 };
 
 function SectionCard({
@@ -217,8 +240,10 @@ function withoutLocalSecrets(config: LocalAIConfig): LocalAIConfig {
 }
 
 export function SettingsPanel() {
+  const [activeSettingsTab, setActiveSettingsTab] = useState('account');
   const [apiConfig, setApiConfig] = useState<APIConfig>(() => getAPIConfig());
   const [localConfig, setLocalConfig] = useState<LocalAIConfig>(() => getLocalAIConfig());
+  const [shortcutConfig, setShortcutConfig] = useState<EditorShortcutConfig>(() => getEditorShortcutConfig());
   const [uiLanguageConfig, setUiLanguageConfig] = useState<UILanguageConfig>(() => getUILanguageConfig());
   const [statuses, setStatuses] = useState<ProviderStatusMap>({});
   const [saved, setSaved] = useState(false);
@@ -227,6 +252,7 @@ export function SettingsPanel() {
   const [permState, setPermState] = useState(() => useEngineStore.getState().automationPermissions);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
   const [sessionAccessMode, setSessionAccessMode] = useState<'user_session' | 'shared_token' | null>(null);
+  const [sessionPolicy, setSessionPolicy] = useState<SessionPolicy | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'token'>('login');
   const [authName, setAuthName] = useState('');
@@ -253,14 +279,15 @@ export function SettingsPanel() {
     setAuthError('');
 
     try {
-      const sessionRes = await fetch('/api/auth/session');
-      const sessionData = await sessionRes.json().catch(() => ({}));
+      const sessionData = await loadClientAuthSession({ forceRefresh: true, maxAgeMs: 0 });
 
       if (!sessionData?.authenticated) {
         setSessionUser(null);
         setSessionAccessMode(null);
+        setSessionPolicy(null);
         setApiConfig(getAPIConfig());
         setLocalConfig(getLocalAIConfig());
+        setStatuses({});
         setAuthLoading(false);
         return;
       }
@@ -269,26 +296,33 @@ export function SettingsPanel() {
       setSessionAccessMode(
         sessionData.accessMode === 'shared_token' ? 'shared_token' : 'user_session'
       );
+      setSessionPolicy((sessionData.policy as SessionPolicy | undefined) || null);
       const cfgRes = await fetch('/api/user/api-config');
-      const cfg = await cfgRes.json().catch(() => ({}));
+      const cfg = (await cfgRes.json().catch(() => ({}))) as ConfigPayload;
       if (cfgRes.ok && cfg?.apiConfig && cfg?.localConfig) {
         setApiConfig(cfg.apiConfig as APIConfig);
         setLocalConfig(cfg.localConfig as LocalAIConfig);
         if (cfg.hasSecrets) {
           setHasSecrets(cfg.hasSecrets as SecretState);
         }
+        if (cfg.providerStatuses) {
+          setStatuses(cfg.providerStatuses);
+        }
         saveAPIConfig(withoutCloudSecrets(cfg.apiConfig as APIConfig));
         saveLocalAIConfig(withoutLocalSecrets(cfg.localConfig as LocalAIConfig));
       } else {
         setApiConfig(getAPIConfig());
         setLocalConfig(getLocalAIConfig());
+        setStatuses({});
       }
     } catch (error) {
       setAuthError(`No se pudo cargar sesión/configuración: ${String(error)}`);
       setSessionUser(null);
       setSessionAccessMode(null);
+      setSessionPolicy(null);
       setApiConfig(getAPIConfig());
       setLocalConfig(getLocalAIConfig());
+      setStatuses({});
     } finally {
       setAuthLoading(false);
     }
@@ -419,6 +453,7 @@ export function SettingsPanel() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
     setSessionUser(null);
     setSessionAccessMode(null);
+    setSessionPolicy(null);
     setHasSecrets({
       openai: false,
       meshy: false,
@@ -428,6 +463,7 @@ export function SettingsPanel() {
       llamacpp: false,
     });
     setSecurityLogs([]);
+    setStatuses({});
     setApiConfig(getAPIConfig());
     setLocalConfig(getLocalAIConfig());
   };
@@ -452,6 +488,7 @@ export function SettingsPanel() {
 
     saveAPIConfig(safeCloud);
     saveLocalAIConfig(safeLocal);
+    saveEditorShortcutConfig(shortcutConfig);
     saveUILanguageConfig({
       ...uiLanguageConfig,
       updatedAt: new Date().toISOString(),
@@ -475,6 +512,9 @@ export function SettingsPanel() {
       if (data?.hasSecrets) {
         setHasSecrets(data.hasSecrets as SecretState);
       }
+      if (data?.providerStatuses) {
+        setStatuses(data.providerStatuses as ProviderStatusMap);
+      }
       setApiConfig((data?.apiConfig as APIConfig) || apiConfig);
       setLocalConfig((data?.localConfig as LocalAIConfig) || localConfig);
     }
@@ -484,79 +524,19 @@ export function SettingsPanel() {
 
   const checkProviders = async () => {
     setChecking(true);
-
-    const nextStatuses: ProviderStatusMap = {
-      openai: {
-        ok: apiConfig.openai.enabled && (!!apiConfig.openai.apiKey || hasSecrets.openai),
-        detail:
-          apiConfig.openai.enabled && (apiConfig.openai.apiKey || hasSecrets.openai)
-            ? 'Clave cargada en tu cuenta'
-            : 'Falta clave o está apagado',
-      },
-      meshy: {
-        ok: apiConfig.meshy.enabled && (!!apiConfig.meshy.apiKey || hasSecrets.meshy),
-        detail:
-          apiConfig.meshy.enabled && (apiConfig.meshy.apiKey || hasSecrets.meshy)
-            ? 'Listo para 3D'
-            : 'Falta clave o está apagado',
-      },
-      runway: {
-        ok: apiConfig.runway.enabled && (!!apiConfig.runway.apiKey || hasSecrets.runway),
-        detail:
-          apiConfig.runway.enabled && (apiConfig.runway.apiKey || hasSecrets.runway)
-            ? 'Clave cargada en tu cuenta'
-            : 'Falta clave o está apagado',
-      },
-    };
-
     try {
-      const [openaiResponse, meshyResponse, runwayResponse, ollamaResponse, vllmResponse, llamacppResponse] =
-        await Promise.all([
-          fetch('/api/openai'),
-          fetch('/api/meshy'),
-          fetch('/api/runway'),
-          fetch('/api/ollama'),
-          fetch('/api/vllm'),
-          fetch('/api/llamacpp'),
-        ]);
-
-      const openaiData = await openaiResponse.json().catch(() => ({}));
-      const meshyData = await meshyResponse.json().catch(() => ({}));
-      const runwayData = await runwayResponse.json().catch(() => ({}));
-      const ollamaData = await ollamaResponse.json().catch(() => ({}));
-      const vllmData = await vllmResponse.json().catch(() => ({}));
-      const llamacppData = await llamacppResponse.json().catch(() => ({}));
-
-      nextStatuses.openai = {
-        ok: !!openaiData.configured,
-        detail: openaiData.configured ? 'API responde' : 'Sin respuesta o sin clave',
-      };
-      nextStatuses.meshy = {
-        ok: !!meshyData.configured,
-        detail: meshyData.configured ? 'API responde' : 'Sin respuesta o sin clave',
-      };
-      nextStatuses.runway = {
-        ok: !!runwayData.configured,
-        detail: runwayData.configured ? 'API responde' : 'Sin respuesta o sin clave',
-      };
-      nextStatuses.ollama = {
-        ok: !!ollamaData.running,
-        detail: ollamaData.running ? 'Servidor local activo' : 'No responde',
-      };
-      nextStatuses.vllm = {
-        ok: !!vllmData.running,
-        detail: vllmData.running ? 'Servidor local activo' : 'No responde',
-      };
-      nextStatuses.llamacpp = {
-        ok: !!llamacppData.running,
-        detail: llamacppData.running ? 'Servidor local activo' : 'No responde',
-      };
+      const response = await fetch('/api/user/api-config', { cache: 'no-store' });
+      const data = (await response.json().catch(() => ({}))) as ConfigPayload;
+      if (!response.ok) {
+        setAuthError('No se pudo actualizar el estado de servicios.');
+        return;
+      }
+      if (data.providerStatuses) {
+        setStatuses(data.providerStatuses);
+      }
     } catch {
-      nextStatuses.ollama = { ok: false, detail: 'Error comprobando estado' };
-      nextStatuses.vllm = { ok: false, detail: 'Error comprobando estado' };
-      nextStatuses.llamacpp = { ok: false, detail: 'Error comprobando estado' };
+      setAuthError('No se pudo actualizar el estado de servicios.');
     } finally {
-      setStatuses(nextStatuses);
       setChecking(false);
     }
   };
@@ -580,7 +560,16 @@ export function SettingsPanel() {
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={checkProviders} disabled={checking}>
             <RefreshCw className={cn('mr-1 h-3 w-3', checking && 'animate-spin')} />
-            Probar
+            Actualizar estado
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setActiveSettingsTab('guide')}
+            data-testid="settings-usage-guide-button"
+          >
+            <BookOpen className="mr-1 h-3 w-3" />
+            Guia de uso
           </Button>
           <Button size="sm" onClick={() => void saveAll()} disabled={authLoading}>
             {saved ? <CheckCircle2 className="mr-1 h-3 w-3" /> : <Save className="mr-1 h-3 w-3" />}
@@ -591,14 +580,15 @@ export function SettingsPanel() {
 
       <ScrollArea className="flex-1">
         <div className="space-y-4 p-3">
-          <Tabs defaultValue="account" className="space-y-4">
-            <TabsList className="grid w-full grid-cols-7 bg-slate-900">
+          <Tabs value={activeSettingsTab} onValueChange={setActiveSettingsTab} className="space-y-4">
+            <TabsList className="grid w-full grid-cols-8 bg-slate-900">
               <TabsTrigger value="account">Usuario</TabsTrigger>
               <TabsTrigger value="guide">Guia IA</TabsTrigger>
               <TabsTrigger value="usage">Uso/Costos</TabsTrigger>
               <TabsTrigger value="cloud">Cloud</TabsTrigger>
               <TabsTrigger value="local">Local</TabsTrigger>
               <TabsTrigger value="routing">Routing</TabsTrigger>
+              <TabsTrigger value="shortcuts">Atajos</TabsTrigger>
               <TabsTrigger value="permissions">Permisos IA</TabsTrigger>
             </TabsList>
 
@@ -616,15 +606,27 @@ export function SettingsPanel() {
                       <div>
                         Acceso:{' '}
                         <span className="text-cyan-300">
-                          {sessionAccessMode === 'shared_token' ? 'token compartido' : 'sesión de usuario'}
+                          {sessionPolicy?.localOwnerMode
+                            ? 'owner local automático'
+                            : sessionAccessMode === 'shared_token'
+                              ? 'token compartido'
+                              : 'sesión de usuario'}
                         </span>
                       </div>
                       <div className="mt-1 text-[11px] text-slate-500">
-                        {sessionAccessMode === 'shared_token'
-                          ? 'Esta sesión usa credenciales compartidas del servidor para OpenAI y Meshy.'
+                        {sessionPolicy?.localOwnerMode
+                          ? 'Este perfil local entra sin email ni password y conserva el camino de deploy remoto para más adelante.'
+                          : sessionAccessMode === 'shared_token'
+                          ? 'Esta sesión usa credenciales compartidas del servidor para OpenAI y Meshy con permisos de colaborador.'
                           : 'Tus credenciales API se cifran en servidor y nunca se guardan en localStorage.'}
                       </div>
                     </div>
+                    {sessionPolicy?.localOwnerMode && (
+                      <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2 text-[11px] text-emerald-200">
+                        Modo local single-user activo. Si en el futuro haces deploy o compartes una instancia remota,
+                        puedes apagar este perfil con `REY30_LOCAL_OWNER_MODE=false`.
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-md border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-300">
                         OpenAI key: {hasSecrets.openai ? 'guardada' : 'no guardada'}
@@ -656,9 +658,11 @@ export function SettingsPanel() {
                         )}
                       </div>
                     )}
-                    <Button size="sm" variant="outline" onClick={() => void handleLogout()}>
-                      Cerrar sesión
-                    </Button>
+                    {!sessionPolicy?.localOwnerMode && (
+                      <Button size="sm" variant="outline" onClick={() => void handleLogout()}>
+                        Cerrar sesión
+                      </Button>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -742,6 +746,8 @@ export function SettingsPanel() {
             </TabsContent>
 
             <TabsContent value="guide" className="space-y-4">
+              <UsageGuideCopilotPanel engineMode={engineMode} modeGuide={modeGuide} />
+
               <SectionCard
                 title="Auto-guiado por entorno"
                 description="El sistema adapta el paso a paso según el modo activo (Manual, Híbrido o AI First)."
@@ -1245,6 +1251,13 @@ export function SettingsPanel() {
                   </div>
                 </div>
               </SectionCard>
+            </TabsContent>
+
+            <TabsContent value="shortcuts" className="space-y-4">
+              <EditorShortcutSettings
+                value={shortcutConfig}
+                onChange={setShortcutConfig}
+              />
             </TabsContent>
 
             <TabsContent value="permissions" className="space-y-4">

@@ -91,17 +91,25 @@ See [docs/BATCH_SCRIPT_POLICY.md](docs/BATCH_SCRIPT_POLICY.md).
 - This key is a server encryption key (not an OpenAI/Meshy/Runway API key).
 - Even with BYOK per-user, the server encryption key is required to securely store each user's provider secrets.
 - Generate a secure key with: `pnpm run security:generate-secret`
+- Validate dependency version floors with: `pnpm run security:deps`
 - Keep the encryption key stable. Rotating it without a migration will break decryption of stored provider secrets.
 - Production rate limiting now requires `REY30_UPSTASH_REDIS_REST_URL` and `REY30_UPSTASH_REDIS_REST_TOKEN` for auth and cost-heavy API routes by default.
+- Signed integrations also use that shared Upstash backend for cross-instance nonce replay protection when it is configured.
 - Only for intentional single-instance deployments, you can opt into in-memory production fallback with `REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION=true`.
 - The local `seal:final` rehearsal can auto-bootstrap a mock Upstash-compatible backend plus a local smoke user; that convenience is only for local verification and does not replace real production credentials.
+- `release:check` now includes `security:deps`, so CI blocks if `next`, `next-intl` or selected transitive security-sensitive packages fall below the pinned minimum versions.
 - Login and registration use tighter public rate limits; tune them with `REY30_RATE_LIMIT_AUTH_WINDOW_MS`, `REY30_RATE_LIMIT_LOGIN_MAX_REQUESTS`, and `REY30_RATE_LIMIT_REGISTER_MAX_REQUESTS`.
 - For remote asset imports via `/api/assets`, define `REY30_REMOTE_FETCH_ALLOWLIST_ASSETS` with a comma-separated list of allowed hostnames (for example: `cdn.example.com,assets.example.org`).
 - Without that asset allowlist, remote imports are blocked by design.
-- Keep `REY30_TRUST_PROXY` disabled by default. Enable it only when running behind a trusted reverse proxy that sanitizes `x-forwarded-for`.
+- Local AI providers (`ollama`, `vllm`, `llamacpp`) are now restricted to server loopback only, and only on explicit host:port allowlists.
+- Default local endpoints are `localhost:11434`, `localhost:8000`, and `localhost:8080`; extend them intentionally with `REY30_LOCAL_PROVIDER_ALLOWLIST_OLLAMA`, `REY30_LOCAL_PROVIDER_ALLOWLIST_VLLM`, and `REY30_LOCAL_PROVIDER_ALLOWLIST_LLAMACPP`.
+- In production, enabling those local providers is blocked by default unless you run in `REY30_LOCAL_OWNER_MODE=true` or explicitly opt in with `REY30_LOCAL_PROVIDER_ALLOW_REMOTE=true`.
+- Keep `REY30_TRUST_PROXY` disabled by default. Enable it only when running behind a trusted reverse proxy that sanitizes forwarded IP headers like `x-forwarded-for` and `x-real-ip`.
 - Runtime scripts are sandboxed with AST checks and loop guard budgets; dynamic `obj[key]` access is blocked unless `key` is a numeric index.
 - Authenticated API mutations now enforce CSRF (`x-rey30-csrf` must match `rey30_csrf` cookie). Login/register remain bootstrap-exempt.
+- Los eventos críticos de auditoría (`login`, `register`, `token`, cambios de configuración y decisiones ops`) intentan persistir en DB y, si esa escritura falla, caen a un store duradero local para no perder trazabilidad.
 - `REY30_REGISTRATION_MODE` now defaults to `invite_only` in all environments. Use `open` or `allowlist` explicitly if needed.
+- Local development registration stays closed unless `REY30_ALLOW_DEV_LOCAL_REGISTRATION=true`.
 - In `open` mode, registration is local-only by default; set `REY30_ALLOW_OPEN_REGISTRATION_REMOTE=true` to allow remote open signup.
 - First-user OWNER bootstrap requires `REY30_BOOTSTRAP_OWNER_TOKEN`; without it, registration creates `VIEWER` users only.
 - `/api/terminal` is disabled by default in all environments; enable with `REY30_ENABLE_TERMINAL_API=true`. Remote access remains blocked unless `REY30_ENABLE_TERMINAL_API_REMOTE=true`.
@@ -116,7 +124,9 @@ See [docs/BATCH_SCRIPT_POLICY.md](docs/BATCH_SCRIPT_POLICY.md).
 
 - The app also supports a no-login shared access mode for collaborators.
 - Auth is handled with `REY30_SHARED_ACCESS_TOKEN`.
+- Shared-token sessions stay in collaborator/`VIEWER` scope even if legacy env files still set a higher role.
 - OpenAI and Meshy can come from server-managed credentials instead of per-user BYOK.
+- Editor and ops routes still require normal `EDITOR` / `OWNER` sessions.
 - The shared/invite OpenAI credential can be rotated with:
   - `$env:INVITE_PROFILE_OPENAI_API_KEY="sk-proj-tu-clave-nueva"`
   - `npx tsx scripts/rotate-invite-openai-key.ts`

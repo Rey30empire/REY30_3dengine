@@ -40,7 +40,7 @@ function getStore(): Map<string, RateBucket> {
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CORS_ALLOWED_METHODS = 'GET,POST,PUT,PATCH,DELETE,OPTIONS';
 const CORS_ALLOWED_HEADERS =
-  'Content-Type, Authorization, X-Requested-With, X-REY30-CSRF, X-REY30-ENGINE-MODE, X-REY30-OPS-TOKEN, X-REY30-INTEGRATION-ID, X-REY30-TIMESTAMP, X-REY30-NONCE, X-REY30-SIGNATURE, X-REY30-ACCESS-TOKEN';
+  'Content-Type, Authorization, X-Requested-With, X-REY30-CSRF, X-REY30-ENGINE-MODE, X-REY30-OPS-TOKEN, X-REY30-INTEGRATION-ID, X-REY30-TIMESTAMP, X-REY30-NONCE, X-REY30-SIGNATURE, X-REY30-ACCESS-TOKEN, X-REY30-EDITOR-SESSION';
 const API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 const INTEGRATION_PATH_PREFIX = '/api/integrations/';
 const SESSION_COOKIE_NAME = 'rey30_session';

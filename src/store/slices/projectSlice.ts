@@ -20,6 +20,7 @@ import {
   HISTORY_LIMIT,
   pushHistory,
 } from '../editorStore.utils';
+import { resolveAdvancedLightingSettings } from '@/types/engine';
 
 function addIdsToSceneMembership(
   scene: Scene,
@@ -178,6 +179,7 @@ export const createProjectSlice: SliceCreator<ProjectSlice> = (set) => ({
         directionalLightIntensity: 1.2,
         directionalLightAzimuth: 45,
         directionalLightElevation: 55,
+        advancedLighting: resolveAdvancedLightingSettings(),
         fog: null,
         postProcessing: {
           bloom: { enabled: false, intensity: 0.5, threshold: 0.8, radius: 0.5 },

@@ -212,6 +212,20 @@ function clampPolicy(policy: UsagePolicy): UsagePolicy {
   };
 }
 
+function policyRowToUsagePolicy(row: {
+  monthlyBudgetUsd: number;
+  hardStopEnabled: boolean;
+  warningThresholdRatio: number;
+  perProviderBudgetJson: string | null;
+}): UsagePolicy {
+  return clampPolicy({
+    monthlyBudgetUsd: row.monthlyBudgetUsd,
+    hardStopEnabled: row.hardStopEnabled,
+    warningThresholdRatio: row.warningThresholdRatio,
+    perProviderBudgets: parseBudgetJson(row.perProviderBudgetJson),
+  });
+}
+
 function getPeriod(now = new Date()): string {
   const yyyy = now.getUTCFullYear();
   const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
@@ -310,28 +324,42 @@ export async function shouldIgnoreDeletedUserRace(
   return !user;
 }
 
-export async function getUserUsagePolicy(userId: string): Promise<UsagePolicy> {
+export async function getUserUsagePolicy(
+  userId: string,
+  options?: { persistDefaults?: boolean }
+): Promise<UsagePolicy> {
   const defaults = buildDefaultPolicy();
   const row = await db.userUsagePolicy.findUnique({ where: { userId } });
   if (!row) {
-    await db.userUsagePolicy.create({
-      data: {
-        userId,
-        monthlyBudgetUsd: defaults.monthlyBudgetUsd,
-        hardStopEnabled: defaults.hardStopEnabled,
-        warningThresholdRatio: defaults.warningThresholdRatio,
-        perProviderBudgetJson: JSON.stringify(defaults.perProviderBudgets),
-      },
-    });
-    return defaults;
+    if (options?.persistDefaults === false) {
+      return defaults;
+    }
+
+    try {
+      await db.userUsagePolicy.createMany({
+        data: [
+          {
+          userId,
+          monthlyBudgetUsd: defaults.monthlyBudgetUsd,
+          hardStopEnabled: defaults.hardStopEnabled,
+          warningThresholdRatio: defaults.warningThresholdRatio,
+          perProviderBudgetJson: JSON.stringify(defaults.perProviderBudgets),
+          },
+        ],
+        skipDuplicates: true,
+      });
+    } catch (error) {
+      if (await shouldIgnoreDeletedUserRace(userId, error)) {
+        return defaults;
+      }
+      throw error;
+    }
+
+    const ensured = await db.userUsagePolicy.findUnique({ where: { userId } });
+    return ensured ? policyRowToUsagePolicy(ensured) : defaults;
   }
 
-  return clampPolicy({
-    monthlyBudgetUsd: row.monthlyBudgetUsd,
-    hardStopEnabled: row.hardStopEnabled,
-    warningThresholdRatio: row.warningThresholdRatio,
-    perProviderBudgets: parseBudgetJson(row.perProviderBudgetJson),
-  });
+  return policyRowToUsagePolicy(row);
 }
 
 export async function saveUserUsagePolicy(
@@ -527,9 +555,13 @@ export async function recordUsage(params: {
   });
 }
 
-export async function getUsageSummary(userId: string, period = getPeriod()): Promise<UsageSummary> {
+export async function getUsageSummary(
+  userId: string,
+  period = getPeriod(),
+  options?: { persistDefaults?: boolean }
+): Promise<UsageSummary> {
   const [policy, rows] = await Promise.all([
-    getUserUsagePolicy(userId),
+    getUserUsagePolicy(userId, options),
     db.providerUsageLedger.findMany({
       where: { userId, period },
     }),
@@ -679,6 +711,7 @@ export async function getUsageInsights(
     months?: number;
     period?: string;
     now?: Date;
+    persistDefaults?: boolean;
   }
 ): Promise<UsageInsights> {
   const now = options?.now || new Date();
@@ -687,8 +720,8 @@ export async function getUsageInsights(
   const periods = getRecentPeriods(months, currentPeriod);
 
   const [policy, current, rows] = await Promise.all([
-    getUserUsagePolicy(userId),
-    getUsageSummary(userId, currentPeriod),
+    getUserUsagePolicy(userId, { persistDefaults: options?.persistDefaults }),
+    getUsageSummary(userId, currentPeriod, { persistDefaults: options?.persistDefaults }),
     db.providerUsageLedger.findMany({
       where: {
         userId,
@@ -823,7 +856,7 @@ export async function getUsageAlerts(period = getPeriod()): Promise<Array<{
   for (const user of users) {
     let summary: UsageSummary;
     try {
-      summary = await getUsageSummary(user.id, period);
+      summary = await getUsageSummary(user.id, period, { persistDefaults: false });
     } catch (error) {
       if (await shouldIgnoreDeletedUserRace(user.id, error)) {
         continue;

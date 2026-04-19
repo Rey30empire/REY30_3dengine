@@ -14,6 +14,7 @@ import {
   publicErrorResponse,
 } from '@/lib/security/public-error';
 import { fetchRemoteJson, RemoteFetchError } from '@/lib/security/remote-fetch';
+import { upsertProviderJobRecord } from '@/lib/server/external-integration-store';
 
 type RunwayRequestBody = {
   action?: 'textToVideo' | 'imageToVideo';
@@ -53,6 +54,25 @@ function buildHeaders(config: {
   };
 }
 
+function normalizeTaskStatus(raw: string): 'queued' | 'processing' | 'completed' | 'failed' | 'canceled' {
+  const value = raw.trim().toLowerCase();
+  if (!value) return 'processing';
+  if (value.includes('queue') || value.includes('pending')) return 'queued';
+  if (value.includes('cancel')) return 'canceled';
+  if (value.includes('fail') || value.includes('error')) return 'failed';
+  if (value.includes('complete') || value.includes('succeed') || value === 'done') return 'completed';
+  return 'processing';
+}
+
+function normalizeRunwayUrl(payload: Record<string, any>): string {
+  const outputs = Array.isArray(payload.output) ? payload.output : Array.isArray(payload.outputs) ? payload.outputs : [];
+  return (
+    (typeof outputs[0]?.url === 'string' ? outputs[0].url : '') ||
+    (typeof outputs[0] === 'string' ? outputs[0] : '') ||
+    (typeof payload.url === 'string' ? payload.url : '')
+  );
+}
+
 export async function GET(request: NextRequest) {
   const correlationId = createCorrelationId(request);
   const { searchParams } = new URL(request.url);
@@ -63,7 +83,7 @@ export async function GET(request: NextRequest) {
 
     if (!config.apiKey || !config.enabled) {
       return NextResponse.json(
-        { configured: false, error: 'Runway API key not configured' },
+        { configured: false, available: false },
         { status: 200 }
       );
     }
@@ -71,8 +91,7 @@ export async function GET(request: NextRequest) {
     if (!taskId) {
       return NextResponse.json({
         configured: true,
-        baseUrl: config.baseUrl,
-        apiVersion: config.apiVersion,
+        available: true,
       });
     }
 
@@ -84,7 +103,29 @@ export async function GET(request: NextRequest) {
       },
     });
     await touchProviderUsage(config.userId, 'runway');
-    return NextResponse.json(data || {}, { status: response.status });
+    const payload = (data || {}) as Record<string, any>;
+    const url = normalizeRunwayUrl(payload);
+    const status = url ? 'completed' : normalizeTaskStatus(String(payload.status || 'processing'));
+    await upsertProviderJobRecord({
+      provider: 'runway',
+      userId: config.userId,
+      projectKey: normalizeProjectKey(request.headers.get('x-rey30-project')) || 'untitled_project',
+      action: 'status',
+      remoteTaskId: taskId,
+      status,
+      result: {
+        url: url || undefined,
+        rawStatus: String(payload.status || ''),
+      },
+    });
+    return NextResponse.json(
+      {
+        success: response.ok,
+        status,
+        url: url || undefined,
+      },
+      { status: response.status }
+    );
   } catch (error) {
     if (error instanceof RemoteFetchError) {
       return publicErrorResponse({
@@ -96,7 +137,7 @@ export async function GET(request: NextRequest) {
       });
     }
     return NextResponse.json(
-      { configured: false, error: 'Usuario no autenticado' },
+      { configured: false, available: false },
       { status: 200 }
     );
   }
@@ -120,7 +161,7 @@ export async function POST(request: NextRequest) {
         metadata: { reason: 'missing_api_key_or_disabled' },
       });
       return NextResponse.json(
-        { error: 'Runway API key not configured' },
+        { error: 'El servicio no está disponible para esta sesión.' },
         { status: 401 }
       );
     }
@@ -161,7 +202,42 @@ export async function POST(request: NextRequest) {
             }),
           ]);
         }
-        return NextResponse.json(payload, { status: response.status });
+        const taskId =
+          typeof payload.id === 'string'
+            ? payload.id
+            : typeof payload.taskId === 'string'
+              ? payload.taskId
+              : '';
+        const url = normalizeRunwayUrl(payload);
+        const status = url ? 'completed' : normalizeTaskStatus(String(payload.status || 'queued'));
+        if (response.ok && taskId) {
+          await upsertProviderJobRecord({
+            provider: 'runway',
+            userId: config.userId,
+            projectKey: projectKey || 'untitled_project',
+            action: 'textToVideo',
+            remoteTaskId: taskId,
+            status,
+            requestSummary: {
+              model: body.model || config.defaultTextModel,
+              duration: body.duration || config.defaultDuration,
+              ratio: body.ratio || config.defaultRatio,
+            },
+            result: {
+              url: url || undefined,
+              rawStatus: String(payload.status || ''),
+            },
+          });
+        }
+        return NextResponse.json(
+          {
+            success: response.ok,
+            status,
+            taskId: taskId || undefined,
+            url: url || undefined,
+          },
+          { status: response.status }
+        );
       }
 
       case 'imageToVideo': {
@@ -200,7 +276,42 @@ export async function POST(request: NextRequest) {
             }),
           ]);
         }
-        return NextResponse.json(payload, { status: response.status });
+        const taskId =
+          typeof payload.id === 'string'
+            ? payload.id
+            : typeof payload.taskId === 'string'
+              ? payload.taskId
+              : '';
+        const url = normalizeRunwayUrl(payload);
+        const status = url ? 'completed' : normalizeTaskStatus(String(payload.status || 'queued'));
+        if (response.ok && taskId) {
+          await upsertProviderJobRecord({
+            provider: 'runway',
+            userId: config.userId,
+            projectKey: projectKey || 'untitled_project',
+            action: 'imageToVideo',
+            remoteTaskId: taskId,
+            status,
+            requestSummary: {
+              model: body.model || config.defaultImageModel,
+              duration: body.duration || config.defaultDuration,
+              ratio: body.ratio || config.defaultRatio,
+            },
+            result: {
+              url: url || undefined,
+              rawStatus: String(payload.status || ''),
+            },
+          });
+        }
+        return NextResponse.json(
+          {
+            success: response.ok,
+            status,
+            taskId: taskId || undefined,
+            url: url || undefined,
+          },
+          { status: response.status }
+        );
       }
 
       default:

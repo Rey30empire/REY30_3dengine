@@ -1,6 +1,9 @@
 ﻿import { describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
-import { GET as assetsGet, POST as assetsPost } from '@/app/api/assets/route';
+import { GET as assetsGet, POST as assetsPost, DELETE as assetsDelete } from '@/app/api/assets/route';
+import { GET as assetViewsGet, POST as assetViewsPost } from '@/app/api/assets/views/route';
+import { GET as assetHistoryGet } from '@/app/api/assets/history/route';
+import { POST as assetHistoryRollbackPost } from '@/app/api/assets/history/rollback/route';
 import { GET as assetsFileGet } from '@/app/api/assets/file/route';
 import { GET as materialsGet, POST as materialsPost } from '@/app/api/materials/route';
 import {
@@ -10,6 +13,7 @@ import {
 import { GET as galleryGet, POST as galleryPost } from '@/app/api/gallery/route';
 import { GET as scriptsGet, POST as scriptsPost } from '@/app/api/scripts/route';
 import { POST as scriptsCompilePost } from '@/app/api/scripts/compile/route';
+import { GET as scriptsRuntimeGet } from '@/app/api/scripts/runtime/route';
 import { POST as buildPost } from '@/app/api/build/route';
 import { POST as exportersPost } from '@/app/api/exporters/route';
 import { POST as packagesPost } from '@/app/api/packages/route';
@@ -35,6 +39,29 @@ describe('Security hardening', () => {
         new NextRequest('http://localhost/api/assets', {
           method: 'POST',
           body: JSON.stringify({ url: 'https://example.com/model.glb' }),
+          headers: { 'content-type': 'application/json' },
+        })
+      ),
+      assetsDelete(
+        new NextRequest('http://localhost/api/assets?path=download/assets/mesh/test.glb', {
+          method: 'DELETE',
+        })
+      ),
+      assetViewsGet(new NextRequest('http://localhost/api/assets/views')),
+      assetViewsPost(
+        new NextRequest('http://localhost/api/assets/views', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'favoritos', filter: { scope: 'all' } }),
+          headers: { 'content-type': 'application/json' },
+        })
+      ),
+      assetHistoryGet(
+        new NextRequest('http://localhost/api/assets/history?path=download/assets/mesh/test.glb')
+      ),
+      assetHistoryRollbackPost(
+        new NextRequest('http://localhost/api/assets/history/rollback', {
+          method: 'POST',
+          body: JSON.stringify({ entryId: 'demo' }),
           headers: { 'content-type': 'application/json' },
         })
       ),
@@ -75,6 +102,9 @@ describe('Security hardening', () => {
           body: JSON.stringify({ content: 'export const x = 1;' }),
           headers: { 'content-type': 'application/json' },
         })
+      ),
+      scriptsRuntimeGet(
+        new NextRequest('http://localhost/api/scripts/runtime?path=scribs/runtime.ts')
       ),
       buildPost(
         new NextRequest('http://localhost/api/build', {
@@ -139,7 +169,7 @@ describe('Security hardening', () => {
         new NextRequest('http://localhost/api/terminal', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ cmd: 'echo hi' }),
+          body: JSON.stringify({ actionId: 'project.git_status' }),
         })
       );
       expect(disabledResponse.status).toBe(404);
@@ -148,7 +178,7 @@ describe('Security hardening', () => {
         new NextRequest('http://example.com/api/terminal', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ cmd: 'echo hi' }),
+          body: JSON.stringify({ actionId: 'project.git_status' }),
         })
       );
       expect(remoteResponse.status).toBe(404);

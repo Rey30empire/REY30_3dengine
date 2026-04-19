@@ -42,6 +42,7 @@ export async function POST(
       target: params.requestId,
       status: 'allowed',
       metadata: { decision },
+      durability: 'critical',
     });
 
     return NextResponse.json({
@@ -58,6 +59,7 @@ export async function POST(
       action: 'ops.budget_approval.decide',
       status: 'error',
       metadata: { error: String(error) },
+      durability: 'critical',
     });
     return NextResponse.json(
       { error: String(error || 'No se pudo resolver la solicitud.') },
@@ -65,4 +67,3 @@ export async function POST(
     );
   }
 }
-

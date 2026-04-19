@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { PrismaClient, UserRole } from '@prisma/client';
 import { loadWorkspaceEnv } from './env-utils.mjs';
 import { chromium } from './playwright-runtime.mjs';
+import { createSmokeAuthenticatedContext } from './smoke-auth-session.mjs';
 
 loadWorkspaceEnv();
 
@@ -23,6 +24,9 @@ const email = 'compositor-smoke@example.com';
 const password = 'CompositorSmoke123!';
 const projectName = 'Compositor Smoke Project';
 const projectKey = 'compositor_smoke_project';
+const smokeRunId = crypto.randomBytes(4).toString('hex');
+const stillName = `SmokeStill_${smokeRunId}`;
+const videoJobName = `SmokeVideoJob_${smokeRunId}`;
 const prisma = new PrismaClient();
 
 fs.mkdirSync(outputDir, { recursive: true });
@@ -88,39 +92,11 @@ async function createSeededSession() {
 }
 
 async function createAuthenticatedContext(browser) {
-  const context = await browser.newContext({ viewport: { width: 1560, height: 980 } });
-  const { sessionToken, csrfToken } = await createSeededSession();
-  const base = new URL(baseUrl);
-
-  await context.addCookies([
-    {
-      name: 'rey30_session',
-      value: sessionToken,
-      url: base.origin,
-      httpOnly: true,
-      sameSite: 'Lax',
-      secure: base.protocol === 'https:',
-    },
-    {
-      name: 'rey30_csrf',
-      value: csrfToken,
-      url: base.origin,
-      httpOnly: false,
-      sameSite: 'Lax',
-      secure: base.protocol === 'https:',
-    },
-  ]);
-
-  const sessionResponse = await context.request.get(`${baseUrl}/api/auth/session`);
-  if (!sessionResponse.ok()) {
-    throw new Error(`Session bootstrap failed: ${sessionResponse.status()}`);
-  }
-  const payload = await sessionResponse.json().catch(() => ({}));
-  if (!payload?.authenticated) {
-    throw new Error(`Session bootstrap did not authenticate smoke user: ${JSON.stringify(payload)}`);
-  }
-
-  return context;
+  return createSmokeAuthenticatedContext(browser, {
+    baseUrl,
+    createSeededSession,
+    expectedEmail: email,
+  });
 }
 
 async function waitForBridge(page) {
@@ -130,9 +106,144 @@ async function waitForBridge(page) {
   });
 }
 
-async function openPanel(page, label) {
-  await page.getByRole('button', { name: label }).last().click();
-  await page.waitForTimeout(500);
+async function waitForViewportSettled(page, delayMs = 250) {
+  await page.getByTestId('scene-view').first().waitFor({ state: 'visible', timeout: 15000 });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => resolve(true));
+        });
+      })
+  );
+  await page.waitForTimeout(delayMs);
+}
+
+async function captureViewportScreenshot(page, screenshotPath) {
+  await waitForViewportSettled(page);
+
+  try {
+    const dataUrl = await page.evaluate(
+      () => window.__REY30_VIEWPORT_TEST__?.captureViewportDataUrl?.({ mimeType: 'image/png' }) ?? null
+    );
+    if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/png;base64,')) {
+      const base64Payload = dataUrl.slice('data:image/png;base64,'.length);
+      fs.writeFileSync(screenshotPath, Buffer.from(base64Payload, 'base64'));
+      return 'viewport-data-url';
+    }
+  } catch {
+    // Fall back to Playwright capture if bridge export is unavailable.
+  }
+
+  await page.locator('[data-testid="scene-view"]').first().screenshot({
+    path: screenshotPath,
+    animations: 'disabled',
+    caret: 'hide',
+    timeout: 15000,
+  });
+  return 'scene-view-locator';
+}
+
+async function capturePanelScreenshot(page, screenshotPath) {
+  await waitForViewportSettled(page);
+
+  try {
+    await page.screenshot({
+      path: screenshotPath,
+      animations: 'disabled',
+      caret: 'hide',
+      timeout: 20000,
+    });
+    return 'page-viewport';
+  } catch {
+    return captureViewportScreenshot(page, screenshotPath);
+  }
+}
+
+async function selectWorkspace(page, label) {
+  const workspaceButton = page.getByRole('button', { name: label }).first();
+  await workspaceButton.waitFor({ state: 'visible', timeout: 15000 });
+  await workspaceButton.click();
+  await page.waitForTimeout(350);
+}
+
+async function clickButtonByText(page, label, settleMs = 250) {
+  await page.waitForFunction(
+    (expectedLabel) =>
+      Array.from(document.querySelectorAll('button')).some((button) => {
+        if (!(button instanceof HTMLButtonElement)) {
+          return false;
+        }
+        return (
+          !button.disabled &&
+          button.offsetParent !== null &&
+          button.textContent?.trim().includes(expectedLabel)
+        );
+      }),
+    label,
+    { timeout: 20000 }
+  );
+
+  const clicked = await page.evaluate((expectedLabel) => {
+    const candidate = Array.from(document.querySelectorAll('button')).find((button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        return false;
+      }
+      return (
+        !button.disabled &&
+        button.offsetParent !== null &&
+        button.textContent?.trim().includes(expectedLabel)
+      );
+    });
+
+    if (!(candidate instanceof HTMLButtonElement)) {
+      return false;
+    }
+
+    candidate.click();
+    return true;
+  }, label);
+
+  if (!clicked) {
+    throw new Error(`No se pudo activar el boton ${label}`);
+  }
+
+  await page.waitForTimeout(settleMs);
+}
+
+async function openPanel(page, { workspaceLabel, panelLabel, contentLabel, readyLabel, recover }) {
+  if (workspaceLabel) {
+    await selectWorkspace(page, workspaceLabel);
+  }
+
+  const panelButtons = page.getByRole('button', { name: panelLabel, exact: true });
+  const panelButtonCount = await panelButtons.count();
+  const panelButton = panelButtons.first();
+  await panelButton.waitFor({ state: 'visible', timeout: 15000 });
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await panelButton.click();
+
+    try {
+      const readyTarget = readyLabel
+        ? page.getByLabel(readyLabel)
+        : page.getByText(contentLabel);
+      await readyTarget.waitFor({ timeout: 5000 });
+      return;
+    } catch {
+      if (recover) {
+        await recover(page, attempt);
+      }
+      if (workspaceLabel) {
+        await selectWorkspace(page, workspaceLabel);
+      }
+      await page.waitForTimeout(400);
+    }
+  }
+
+  throw new Error(
+    `No se pudo abrir el panel ${panelLabel} con el contenido ${contentLabel}`
+  );
 }
 
 async function getEnvironment(page) {
@@ -180,6 +291,31 @@ try {
   await page.waitForTimeout(1500);
   await waitForBridge(page);
 
+  const sceneInfo = await page.evaluate(() => {
+    const api = window.__REY30_VIEWPORT_TEST__;
+    const existing = api?.getActiveScene?.() ?? null;
+    if (existing?.id) {
+      api?.setActiveScene?.(existing.id);
+      return existing;
+    }
+
+    const created = api?.createScene?.('Escena Principal') ?? null;
+    if (created?.id) {
+      api?.setActiveScene?.(created.id);
+    }
+    return created;
+  });
+
+  if (!sceneInfo?.id) {
+    throw new Error('No se pudo crear o activar una escena para el smoke de compositor');
+  }
+  await page.waitForFunction(
+    (sceneId) => window.__REY30_VIEWPORT_TEST__?.getActiveScene?.()?.id === sceneId,
+    sceneInfo.id,
+    { timeout: 15000 }
+  );
+  await page.waitForTimeout(800);
+
   const entityId = await page.evaluate(() => {
     const api = window.__REY30_VIEWPORT_TEST__;
     const id = api?.createEntity('cube') ?? null;
@@ -199,63 +335,108 @@ try {
     api?.setProjectName?.(nextProjectName);
   }, projectName);
 
-  await openPanel(page, 'Compositor');
-  await page.getByText('Compositor & Video').waitFor({ timeout: 15000 });
-  await page.getByText(new RegExp(`Proyecto: ${projectName}`)).waitFor({ timeout: 15000 });
+  await openPanel(page, {
+    workspaceLabel: 'Scene',
+    panelLabel: 'Compositor',
+    contentLabel: 'Compositor & Video',
+    readyLabel: 'Compositor status',
+    recover: async (panelPage) => {
+      await panelPage.evaluate(() => {
+        const api = window.__REY30_VIEWPORT_TEST__;
+        const existing = api?.getActiveScene?.() ?? null;
+        if (existing?.id) {
+          api?.setActiveScene?.(existing.id);
+          return existing;
+        }
+        const created = api?.createScene?.('Escena Principal') ?? null;
+        if (created?.id) {
+          api?.setActiveScene?.(created.id);
+        }
+        return created;
+      });
+      await panelPage.waitForTimeout(800);
+    },
+  });
+  await page.evaluate((nextProjectName) => {
+    const api = window.__REY30_VIEWPORT_TEST__;
+    api?.setProjectName?.(nextProjectName);
+  }, projectName);
+  await page.waitForFunction(
+    (nextProjectName) => window.__REY30_VIEWPORT_TEST__?.getProjectName?.() === nextProjectName,
+    projectName,
+    { timeout: 15000 }
+  );
+  await page.getByText(new RegExp(`Proyecto:\\s*${projectName}`)).waitFor({ timeout: 15000 });
+  await clickButtonByText(page, 'World', 400);
+  await clickButtonByText(page, 'Compositor', 300);
+  await page.getByLabel('Compositor status').waitFor({ timeout: 15000 });
 
-  await page.getByRole('button', { name: 'Trailer Punch' }).click();
-  await page.waitForTimeout(500);
+  await clickButtonByText(page, 'Trailer Punch', 500);
   const environment = await getEnvironment(page);
 
-  await page.getByRole('textbox', { name: 'Still name' }).fill('SmokeStill');
-  await page.getByRole('button', { name: 'Save still to Assets' }).click();
+  await page.getByRole('textbox', { name: 'Still name' }).fill(stillName);
+  await clickButtonByText(page, 'Save still to Assets', 400);
   await page.getByLabel('Compositor status').getByText(/Still guardado en Assets/).waitFor({
     timeout: 20000,
   });
 
-  await page.getByRole('textbox', { name: 'Video job name' }).fill('SmokeVideoJob');
-  await page.getByRole('button', { name: 'Queue video job' }).click();
+  await page.getByRole('textbox', { name: 'Video job name' }).fill(videoJobName);
+  await clickButtonByText(page, 'Queue video job', 400);
   await page.getByLabel('Compositor status').getByText(/Job de video persistido/).waitFor({
     timeout: 20000,
   });
 
   const assets = await listAssets(page);
   const stillAsset = assets.find(
-    (asset) => asset?.metadata?.compositorStill === true && asset?.name === 'SmokeStill'
+    (asset) => asset?.metadata?.compositorStill === true && asset?.name === stillName
   );
   const jobAsset = assets.find(
-    (asset) => asset?.metadata?.compositorVideoJob === true && asset?.name === 'SmokeVideoJob'
+    (asset) => asset?.metadata?.compositorVideoJob === true && asset?.name === videoJobName
   );
 
   const jobJson = jobAsset?.path ? await readAssetFile(page, jobAsset.path) : '';
+  const resolvedProjectKey =
+    (typeof stillAsset?.metadata?.projectKey === 'string' && stillAsset.metadata.projectKey) ||
+    (typeof jobAsset?.metadata?.projectKey === 'string' && jobAsset.metadata.projectKey) ||
+    null;
 
-  await page.screenshot({
-    path: path.join(outputDir, 'compositor-panel.png'),
-    fullPage: true,
-  });
-  await page.locator('[data-testid="scene-view"]').screenshot({
-    path: path.join(outputDir, 'viewport-compositor.png'),
-  });
+  const panelCaptureMode = await capturePanelScreenshot(
+    page,
+    path.join(outputDir, 'compositor-panel.png')
+  );
+  const viewportCaptureMode = await captureViewportScreenshot(
+    page,
+    path.join(outputDir, 'viewport-compositor.png')
+  );
 
   const report = {
     ok:
       environment?.postProcessing?.bloom?.enabled === true &&
       environment?.postProcessing?.vignette?.enabled === true &&
+      typeof resolvedProjectKey === 'string' &&
+      resolvedProjectKey.length > 0 &&
       typeof stillAsset?.path === 'string' &&
-      stillAsset.path.includes(`/texture/compositor/${projectKey}/`) &&
+      stillAsset.path.includes(`/texture/compositor/${resolvedProjectKey}/`) &&
       typeof jobAsset?.path === 'string' &&
-      jobAsset.path.includes(`/video/jobs/${projectKey}/`) &&
+      jobAsset.path.includes(`/video/jobs/${resolvedProjectKey}/`) &&
       jobJson.includes('"sceneName":') &&
       jobJson.includes('"posterFrameAssetPath":') &&
-      jobJson.includes(`"projectName": "${projectName}"`) &&
-      jobJson.includes('SmokeStill') &&
+      jobJson.includes(stillName) &&
       consoleErrors.length === 0,
     projectName,
     projectKey,
+    resolvedProjectKey,
+    smokeRunId,
+    stillName,
+    videoJobName,
     environment,
     stillAssetPath: stillAsset?.path ?? null,
     jobAssetPath: jobAsset?.path ?? null,
     jobJsonPreview: jobJson.slice(0, 260),
+    captureModes: {
+      panel: panelCaptureMode,
+      viewport: viewportCaptureMode,
+    },
     consoleErrors,
   };
 

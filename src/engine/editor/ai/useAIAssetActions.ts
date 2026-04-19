@@ -2,20 +2,19 @@
 
 import { useCallback, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { getAPIConfig } from '@/lib/api-config';
 import type { Asset, ChatMessage } from '@/types/engine';
 import type { CapabilityStatus } from './providerStatus';
 import type { GenerationTask } from './generationTask';
 import {
+  requestAIAgentPlannerUpdate,
+  requestAssistantImage,
+  requestAssistantModel3D,
+  requestAssistantTaskStatus,
+  requestAssistantVideo,
+  requestCharacterFinalize,
   requestCharacterJobStart,
   requestCharacterJobStatus,
   requestCharacterJobCancel,
-  requestMeshyPreviewStart,
-  requestMeshyTaskStatus,
-  requestOpenAIImage,
-  requestOpenAIVideo,
-  requestRunwayTaskStatus,
-  requestRunwayTextToVideo,
 } from './requestClient';
 
 function sleep(ms: number) {
@@ -27,37 +26,93 @@ function toHumanCharacterStage(stage: string): string {
   if (!value) return 'processing';
   if (value === 'queued') return 'en cola';
   if (value === 'parse_prompt') return 'analizando prompt';
-  if (value === 'build_mesh') return 'construyendo malla';
-  if (value === 'rig_and_package') return 'aplicando rig y empaquetando';
+  if (value === 'build_mesh') return 'dando forma al personaje';
+  if (value === 'rig_and_package') return 'afinando personaje';
   if (value === 'done') return 'completado';
   if (value === 'failed') return 'falló';
   if (value === 'canceled') return 'cancelado';
   return value.replace(/_/g, ' ');
 }
 
-function toHumanMeshyStage(status: string): string {
+function toHumanModelStage(status: string): string {
   const value = status.trim().toLowerCase();
   if (!value) return 'procesando';
   if (value === 'queued' || value === 'pending') return 'en cola';
-  if (value === 'processing' || value === 'in_progress' || value === 'running') return 'generando malla';
-  if (value === 'texturing' || value === 'refining') return 'aplicando texturas';
+  if (value === 'processing' || value === 'in_progress' || value === 'running') return 'dando forma al modelo';
+  if (value === 'texturing' || value === 'refining') return 'acabado final';
   if (value === 'completed') return 'completado';
   if (value === 'failed') return 'falló';
   return value.replace(/_/g, ' ');
 }
 
-const MESHY_POLL_MS = 2_000;
-const MESHY_MAX_POLLS = 45;
+const MODEL_POLL_MS = 2_000;
+const MODEL_MAX_POLLS = 45;
+
+function toEngineCharacterAsset(value: unknown, fallbackPrompt: string): Asset | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const path = typeof record.path === 'string' ? record.path.trim().replace(/^\/+/, '') : '';
+  if (!path) return null;
+
+  const createdAtRaw = typeof record.createdAt === 'string' ? record.createdAt : '';
+  const createdAt = createdAtRaw ? new Date(createdAtRaw) : new Date();
+
+  return {
+    id:
+      typeof record.id === 'string' && record.id.trim().length > 0
+        ? record.id
+        : crypto.randomUUID(),
+    name:
+      typeof record.name === 'string' && record.name.trim().length > 0
+        ? record.name
+        : `${fallbackPrompt.slice(0, 28) || 'character'}_package`,
+    type:
+      record.type === 'prefab' ||
+      record.type === 'mesh' ||
+      record.type === 'texture' ||
+      record.type === 'material' ||
+      record.type === 'modifier_preset' ||
+      record.type === 'script' ||
+      record.type === 'animation' ||
+      record.type === 'audio' ||
+      record.type === 'video' ||
+      record.type === 'scene' ||
+      record.type === 'shader' ||
+      record.type === 'font'
+        ? (record.type as Asset['type'])
+        : 'prefab',
+    path,
+    size: typeof record.size === 'number' && Number.isFinite(record.size) ? record.size : 0,
+    createdAt: Number.isNaN(createdAt.getTime()) ? new Date() : createdAt,
+    metadata:
+      typeof record.metadata === 'object' && record.metadata !== null
+        ? (record.metadata as Asset['metadata'])
+        : {},
+  };
+}
+
+type AssistantPlannerLinkedJob = {
+  jobId: string;
+  kind: 'video' | 'model3d' | 'character';
+  backend: 'openai-video' | 'runway-video' | 'meshy-model' | 'character-job';
+  asset?: {
+    url?: string;
+    thumbnailUrl?: string;
+    path?: string;
+  } | null;
+};
 
 export function useAIAssetActions(params: {
   projectName: string;
+  activePlannerPlanId?: string | null;
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
   addAsset: (asset: Asset) => void;
-  getCapabilityStatus: (config: ReturnType<typeof getAPIConfig>) => Promise<CapabilityStatus>;
+  getCapabilityStatus: () => Promise<CapabilityStatus>;
   setActiveTask: Dispatch<SetStateAction<GenerationTask | null>>;
 }) {
   const {
     projectName,
+    activePlannerPlanId,
     addChatMessage,
     addAsset,
     getCapabilityStatus,
@@ -66,25 +121,61 @@ export function useAIAssetActions(params: {
   const activeCharacterJobIdRef = useRef<string | null>(null);
   const activeCharacterAbortRef = useRef<AbortController | null>(null);
 
-  const generateImageAsset = useCallback(async (prompt: string) => {
-    const config = getAPIConfig();
-    const capabilityStatus = await getCapabilityStatus(config);
+  const sealAssistantResultApplied = useCallback(
+    async (params: {
+      job?: AssistantPlannerLinkedJob | null;
+      summary: string;
+      asset?: {
+        url?: string;
+        thumbnailUrl?: string;
+        path?: string;
+      } | null;
+    }) => {
+      if (!activePlannerPlanId || !params.job?.jobId) {
+        return;
+      }
 
-    if (!capabilityStatus.imageReady) {
+      try {
+        await requestAIAgentPlannerUpdate({
+          projectName,
+          planId: activePlannerPlanId,
+          action: 'assistant_apply',
+          taskId: params.job.jobId,
+          kind: params.job.kind,
+          backend: params.job.backend,
+          summary: params.summary,
+          asset: params.asset ?? params.job.asset ?? null,
+        });
+      } catch {
+        // Best-effort planner seal: never block the user-facing import.
+      }
+    },
+    [activePlannerPlanId, projectName]
+  );
+
+  const generateImageAsset = useCallback(async (prompt: string) => {
+    const capabilityStatus = await getCapabilityStatus();
+
+    if (!capabilityStatus.image.available) {
       addChatMessage({
         role: 'assistant',
-        content: '⚠️ **Generación de imagen no disponible**\n\nActiva OpenAI y la capacidad de imagen en Configuración.',
+        content: '⚠️ **Generación de imagen no disponible**\n\nEsta sesión todavía no tiene habilitada la creación de imágenes.',
         metadata: { type: 'config-warning' },
       });
       return;
     }
 
-    const { response, data } = await requestOpenAIImage({
-      config,
+    const { response, data } = await requestAssistantImage({
       prompt,
       projectName: projectName || 'untitled_project',
     });
-    if (!response.ok || !data.imageUrl) {
+    const imageUrl =
+      typeof data.asset?.url === 'string'
+        ? data.asset.url
+        : typeof data.imageUrl === 'string'
+          ? data.imageUrl
+          : '';
+    if (!response.ok || !imageUrl) {
       throw new Error(data.error || 'No se pudo generar la imagen');
     }
 
@@ -92,7 +183,7 @@ export function useAIAssetActions(params: {
       id: crypto.randomUUID(),
       name: `${prompt.slice(0, 24) || 'texture'}_ai.png`,
       type: 'texture',
-      path: data.imageUrl,
+      path: imageUrl,
       size: 0,
       createdAt: new Date(),
       metadata: {
@@ -106,77 +197,73 @@ export function useAIAssetActions(params: {
       content: `✅ **Imagen generada**\n\nPrompt: "${prompt}"\nLista para usar como textura o referencia visual.`,
       metadata: {
         type: 'image',
-        thumbnailUrl: data.imageUrl,
+        thumbnailUrl: imageUrl,
       },
     });
-  }, [addAsset, addChatMessage, getCapabilityStatus, projectName]);
+  }, [activePlannerPlanId, addAsset, addChatMessage, getCapabilityStatus, projectName]);
 
   const generateVideoAsset = useCallback(async (prompt: string) => {
-    const config = getAPIConfig();
-    const capabilityStatus = await getCapabilityStatus(config);
-    const provider = config.routing.video;
+    const capabilityStatus = await getCapabilityStatus();
+    const videoAvailable = capabilityStatus.video.available;
     let taskId = '';
     let videoUrl = '';
+    let assistantJob: AssistantPlannerLinkedJob | null = null;
 
-    if (provider === 'runway') {
-      if (!capabilityStatus.runwayVideoReady) {
-        addChatMessage({
-          role: 'assistant',
-          content: '⚠️ **Runway no está listo**\n\nActiva Runway y la capacidad de video en Configuración.',
-          metadata: { type: 'config-warning' },
-        });
-        return;
-      }
-
-      const { response, data } = await requestRunwayTextToVideo({
-        config,
-        prompt,
-        projectName: projectName || 'untitled_project',
+    if (!videoAvailable) {
+      addChatMessage({
+        role: 'assistant',
+        content: '⚠️ **Generación de video no disponible**\n\nEsta sesión todavía no tiene habilitada la creación de video.',
+        metadata: { type: 'config-warning' },
       });
+      return;
+    }
 
-      if (!response.ok) {
-        throw new Error(data.error || 'No se pudo iniciar la generación de video en Runway');
-      }
+    const { response, data } = await requestAssistantVideo({
+      prompt,
+      projectName: projectName || 'untitled_project',
+      planId: activePlannerPlanId,
+    });
+    if (!response.ok) {
+      throw new Error(data.error || 'No se pudo iniciar la generación de video');
+    }
+    assistantJob =
+      data.job && typeof data.job === 'object'
+        ? (data.job as AssistantPlannerLinkedJob)
+        : null;
 
-      taskId = data.id || data.taskId || '';
-      for (let attempt = 0; attempt < 12 && taskId; attempt += 1) {
-        await sleep(2500);
-        const { data: statusData } = await requestRunwayTaskStatus(taskId);
-        const outputs = statusData.output || statusData.outputs || [];
-        videoUrl =
-          outputs?.[0]?.url ||
-          outputs?.[0] ||
-          statusData.url ||
-          '';
-        const statusValue = String(statusData.status || '').toLowerCase();
-        if (videoUrl || statusValue.includes('succeed') || statusValue.includes('complete')) {
-          break;
-        }
-        if (statusValue.includes('fail')) {
-          throw new Error(statusData.error || 'Runway devolvió un error al renderizar el video');
-        }
-      }
-    } else {
-      if (!capabilityStatus.openAIVideoReady) {
-        addChatMessage({
-          role: 'assistant',
-          content: '⚠️ **OpenAI Video no está listo**\n\nActiva OpenAI y la capacidad de video en Configuración.',
-          metadata: { type: 'config-warning' },
-        });
-        return;
-      }
+    taskId =
+      typeof data.taskToken === 'string'
+        ? data.taskToken
+        : typeof data.taskId === 'string'
+          ? data.taskId
+          : '';
+    videoUrl =
+      typeof data.asset?.url === 'string'
+        ? data.asset.url
+        : typeof data.url === 'string'
+          ? data.url
+          : '';
 
-      const { response, data } = await requestOpenAIVideo({
-        config,
-        prompt,
-        projectName: projectName || 'untitled_project',
-      });
-      if (!response.ok) {
-        throw new Error(data.error || 'No se pudo iniciar la generación de video en OpenAI');
+    for (let attempt = 0; attempt < 12 && taskId && !videoUrl; attempt += 1) {
+      await sleep(2500);
+      const { data: statusData } = await requestAssistantTaskStatus(taskId);
+      assistantJob =
+        statusData.job && typeof statusData.job === 'object'
+          ? (statusData.job as AssistantPlannerLinkedJob)
+          : assistantJob;
+      videoUrl =
+        typeof statusData.asset?.url === 'string'
+          ? statusData.asset.url
+          : typeof statusData.url === 'string'
+            ? statusData.url
+            : '';
+      const statusValue = String(statusData.status || '').toLowerCase();
+      if (videoUrl || statusValue.includes('complete')) {
+        break;
       }
-
-      taskId = data.id || data.videoId || '';
-      videoUrl = data.url || '';
+      if (statusValue.includes('fail')) {
+        throw new Error(statusData.error || 'No se pudo completar el video');
+      }
     }
 
     if (videoUrl) {
@@ -192,34 +279,39 @@ export function useAIAssetActions(params: {
           prompt,
         },
       });
+      await sealAssistantResultApplied({
+        job: assistantJob,
+        summary: 'El clip generado por AI quedó agregado a assets del proyecto.',
+        asset: {
+          url: videoUrl,
+        },
+      });
     }
 
     addChatMessage({
       role: 'assistant',
       content: videoUrl
         ? `✅ **Video generado**\n\nPrompt: "${prompt}"\nEl clip ya quedó agregado a assets.`
-        : `⏳ **Video en cola**\n\nPrompt: "${prompt}"\nTask: ${taskId || 'sin id devuelto'}\nRevisa más tarde el estado del render.`,
+        : `⏳ **Video en preparación**\n\nPrompt: "${prompt}"\nTodavía lo estoy procesando; revisa más tarde el resultado.`,
       metadata: {
         type: 'video',
         modelUrl: videoUrl,
       },
     });
-  }, [addAsset, addChatMessage, getCapabilityStatus, projectName]);
+  }, [addAsset, addChatMessage, getCapabilityStatus, projectName, sealAssistantResultApplied]);
 
   const canGenerate3DModel = useCallback(async () => {
-    const config = getAPIConfig();
-    const capabilityStatus = await getCapabilityStatus(config);
-    return capabilityStatus.meshyReady;
+    const capabilityStatus = await getCapabilityStatus();
+    return capabilityStatus.model3d.available;
   }, [getCapabilityStatus]);
 
   const generate3DModel = useCallback(async (prompt: string, artStyle: string = 'lowpoly') => {
-    const config = getAPIConfig();
-    const capabilityStatus = await getCapabilityStatus(config);
+    const capabilityStatus = await getCapabilityStatus();
 
-    if (!capabilityStatus.meshyReady) {
+    if (!capabilityStatus.model3d.available) {
       addChatMessage({
         role: 'assistant',
-        content: '⚠️ **Meshy no está listo**\n\nActiva Meshy, añade tu API key y deja habilitada la capacidad 3D en Configuración.',
+        content: '⚠️ **Generación 3D no disponible**\n\nEsta sesión todavía no tiene habilitada la creación automática de modelos 3D.',
         metadata: { type: 'error' },
       });
       return false;
@@ -232,74 +324,105 @@ export function useAIAssetActions(params: {
       prompt,
       status: 'processing',
       progress: 0,
-      stage: toHumanMeshyStage('queued'),
-      provider: 'meshy',
+      stage: toHumanModelStage('queued'),
+      deliveryPath: 'accelerated',
     });
 
     try {
-      const { response, data } = await requestMeshyPreviewStart({
-        config,
+      let assistantJob: AssistantPlannerLinkedJob | null = null;
+      const { response, data } = await requestAssistantModel3D({
         prompt,
         artStyle,
         projectName: projectName || 'untitled_project',
+        planId: activePlannerPlanId,
       });
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to start generation');
       }
+      assistantJob =
+        data.job && typeof data.job === 'object'
+          ? (data.job as AssistantPlannerLinkedJob)
+          : null;
 
-      const meshyTaskId =
-        typeof data.result === 'string'
-          ? data.result
-          : typeof data.id === 'string'
-            ? data.id
+      const modelTaskToken =
+        typeof data.taskToken === 'string'
+          ? data.taskToken
+          : typeof data.taskId === 'string'
+            ? data.taskId
             : '';
-      if (!meshyTaskId) {
-        throw new Error('Meshy no devolvió taskId válido');
+      if (!modelTaskToken) {
+        throw new Error('No se recibió una tarea válida de modelo 3D');
       }
 
       let progress = 0;
       let completed = false;
 
-      for (let attempt = 0; attempt < MESHY_MAX_POLLS; attempt += 1) {
-        await sleep(MESHY_POLL_MS);
-        const { data: statusData } = await requestMeshyTaskStatus(meshyTaskId);
-        const statusValue = String(statusData.status || statusData.state || '').toLowerCase();
+      for (let attempt = 0; attempt < MODEL_MAX_POLLS; attempt += 1) {
+        await sleep(MODEL_POLL_MS);
+        const { data: statusData } = await requestAssistantTaskStatus(modelTaskToken);
+        assistantJob =
+          statusData.job && typeof statusData.job === 'object'
+            ? (statusData.job as AssistantPlannerLinkedJob)
+            : assistantJob;
+        const statusValue = String(statusData.status || '').toLowerCase();
+        const modelUrl =
+          typeof statusData.asset?.url === 'string'
+            ? statusData.asset.url
+            : typeof statusData.model_urls?.glb === 'string'
+              ? statusData.model_urls.glb
+              : '';
+        const thumbnailUrl =
+          typeof statusData.asset?.thumbnailUrl === 'string'
+            ? statusData.asset.thumbnailUrl
+            : typeof statusData.preview?.thumbnailUrl === 'string'
+              ? statusData.preview.thumbnailUrl
+              : typeof statusData.thumbnail_url === 'string'
+                ? statusData.thumbnail_url
+                : '';
 
-        if (statusValue === 'completed') {
+        if (statusValue === 'completed' && modelUrl) {
           setActiveTask((prev) => prev ? {
             ...prev,
             status: 'completed',
             progress: 100,
-            stage: toHumanMeshyStage('completed'),
-            provider: 'meshy',
-            modelUrl: statusData.model_urls?.glb,
-            thumbnailUrl: statusData.thumbnail_url,
+            stage: toHumanModelStage('completed'),
+            deliveryPath: 'accelerated',
+            modelUrl,
+            thumbnailUrl,
           } : null);
 
-          if (statusData.model_urls?.glb) {
+          if (modelUrl) {
             addAsset({
               id: crypto.randomUUID(),
               name: prompt.slice(0, 30),
               type: 'mesh',
-              path: statusData.model_urls.glb,
+              path: modelUrl,
               size: 0,
               createdAt: new Date(),
               metadata: {
                 format: 'glb',
-                generatedBy: 'meshy',
+                generatedBy: 'assistant-generate',
                 prompt,
+              },
+            });
+            await sealAssistantResultApplied({
+              job: assistantJob,
+              summary: 'El modelo 3D generado por AI quedó agregado a assets del proyecto.',
+              asset: {
+                url: modelUrl,
+                thumbnailUrl: thumbnailUrl || undefined,
               },
             });
           }
 
           addChatMessage({
             role: 'assistant',
-            content: `✅ **Modelo 3D generado exitosamente!**\n\n🎨 Prompt: "${prompt}"\n📦 Formato: GLB con PBR textures\n\nEl modelo está listo para importar al editor.`,
+            content: `✅ **Modelo 3D listo**\n\nPrompt: "${prompt}"\nEl modelo quedó preparado para usar dentro del editor.`,
             metadata: {
               type: 'model',
-              modelUrl: statusData.model_urls?.glb,
-              thumbnailUrl: statusData.thumbnail_url,
+              modelUrl,
+              thumbnailUrl,
             },
           });
           completed = true;
@@ -317,14 +440,14 @@ export function useAIAssetActions(params: {
         setActiveTask((prev) => prev ? {
           ...prev,
           progress,
-          stage: toHumanMeshyStage(statusValue || 'processing'),
-          provider: 'meshy',
-          thumbnailUrl: statusData.thumbnail_url,
+          stage: toHumanModelStage(statusValue || 'processing'),
+          deliveryPath: 'accelerated',
+          thumbnailUrl,
         } : null);
       }
 
       if (!completed) {
-        throw new Error('Meshy tardó demasiado en completar (timeout de espera).');
+        throw new Error('La creación 3D tardó demasiado en completarse.');
       }
 
       return true;
@@ -338,13 +461,13 @@ export function useAIAssetActions(params: {
       addChatMessage({
         role: 'assistant',
         content:
-          `❌ **Error al generar modelo con Meshy**\n\n${error}\n\n` +
-          'Si Meshy está lento, puedo continuar con el pipeline interno de personaje.',
+          `❌ **No pude completar el modelo 3D**\n\n${error}\n\n` +
+          'Si quieres, puedo seguir con una versión editable para no frenar el trabajo.',
         metadata: { type: 'error' },
       });
       return false;
     }
-  }, [addAsset, addChatMessage, getCapabilityStatus, projectName, setActiveTask]);
+  }, [addAsset, addChatMessage, getCapabilityStatus, projectName, sealAssistantResultApplied, setActiveTask]);
 
   const cancelCharacterGeneration = useCallback(async () => {
     const activeJobId = activeCharacterJobIdRef.current;
@@ -379,24 +502,34 @@ export function useAIAssetActions(params: {
   }, [addChatMessage, setActiveTask]);
 
   const generateCharacterAsset = useCallback(async (prompt: string) => {
-    const config = getAPIConfig();
-    const capabilityStatus = await getCapabilityStatus(config);
+    const capabilityStatus = await getCapabilityStatus();
 
-    // Optional fast path: try Meshy first when enabled, then fallback automatically.
-    if (capabilityStatus.meshyReady) {
+    if (!capabilityStatus.character.available) {
       addChatMessage({
         role: 'assistant',
         content:
-          '⚡ **Meshy activo**\n\nIntento generación rápida en Meshy. Si tarda o falla, cambio automáticamente al pipeline interno (Profile A/local fallback).',
+          '⚠️ **Generación de personaje no disponible**\n\n' +
+          'Esta sesión todavía no tiene habilitada la creación completa de personajes.',
+        metadata: { type: 'config-warning' },
+      });
+      return;
+    }
+
+    // Optional fast path: try the accelerated 3D path first, then fallback automatically.
+    if (capabilityStatus.model3d.available) {
+      addChatMessage({
+        role: 'assistant',
+        content:
+          '⚡ **Generación rápida disponible**\n\nVoy a intentar la vía más rápida y, si no responde a tiempo, continuaré automáticamente con una ruta compatible.',
         metadata: { agentType: 'orchestrator' },
       });
-      const meshySucceeded = await generate3DModel(prompt, 'realistic');
-      if (meshySucceeded) {
+      const acceleratedPathSucceeded = await generate3DModel(prompt, 'realistic');
+      if (acceleratedPathSucceeded) {
         return;
       }
       addChatMessage({
         role: 'assistant',
-        content: '🔁 **Fallback automático**\n\nMeshy no terminó a tiempo. Continúo con el pipeline interno de personaje.',
+        content: '🔁 **Continuando automáticamente**\n\nLa ruta rápida no terminó a tiempo. Sigo con una alternativa compatible para completar el personaje.',
         metadata: { agentType: 'orchestrator' },
       });
     }
@@ -405,48 +538,40 @@ export function useAIAssetActions(params: {
       const controller = new AbortController();
       activeCharacterAbortRef.current = controller;
       try {
-        const response = await fetch('/api/character/full', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const responsePayload = await requestCharacterFinalize({
+          taskToken: remoteJobId,
+          prompt,
+          planId: activePlannerPlanId,
+          style: 'realista',
           signal: controller.signal,
-          body: JSON.stringify({
-            prompt,
-            style: 'realista',
-            targetEngine: 'generic',
-            includeAnimations: true,
-            includeBlendshapes: true,
-            remoteJobId: remoteJobId || undefined,
-          }),
         });
-        const data = await response.json().catch(() => ({} as Record<string, unknown>));
+        const { response, data } = responsePayload;
 
         if (!response.ok || !data?.success) {
           const message = typeof data?.error === 'string' ? data.error : 'No se pudo generar personaje';
           throw new Error(message);
         }
 
-        const packagePath =
-          typeof data.packagePath === 'string' && data.packagePath.trim().length > 0
-            ? data.packagePath
-            : '';
-        const safePath = packagePath ? `/${packagePath.replace(/^\/+/, '')}` : '/download/assets/characters';
-        const backendSource =
-          typeof data.backendSource === 'string' && data.backendSource.trim().length > 0
-            ? data.backendSource
-            : 'local-fallback';
-
+        const asset = toEngineCharacterAsset(data.asset, prompt);
+        if (!asset) {
+          throw new Error('El backend no devolvió un asset durable del personaje.');
+        }
         addAsset({
-          id: crypto.randomUUID(),
-          name: `${prompt.slice(0, 28) || 'character'}_package`,
-          type: 'prefab',
-          path: safePath,
-          size: 0,
-          createdAt: new Date(),
+          ...asset,
           metadata: {
-            generatedBy: 'character-full-route',
-            prompt,
+            ...asset.metadata,
             quality: data?.quality || null,
-            backendSource,
+            packageSummary: data?.packageSummary || null,
+          },
+        });
+        await sealAssistantResultApplied({
+          job:
+            data?.job && typeof data.job === 'object'
+              ? (data.job as AssistantPlannerLinkedJob)
+              : null,
+          summary: 'El paquete de personaje generado por AI quedó agregado al proyecto.',
+          asset: {
+            path: asset.path,
           },
         });
 
@@ -455,7 +580,7 @@ export function useAIAssetActions(params: {
           status: 'completed',
           progress: 100,
           stage: toHumanCharacterStage('done'),
-          provider: backendSource === 'profile-a-backend' ? 'profile_a' : 'local_fallback',
+          deliveryPath: prev.deliveryPath || 'fallback',
         } : null);
 
         addChatMessage({
@@ -463,8 +588,7 @@ export function useAIAssetActions(params: {
           content:
             `✅ **Personaje generado**\n\n` +
             `Prompt: "${prompt}"\n` +
-            `Se creó un paquete de personaje con malla + rig + animaciones base.\n` +
-            `Fuente: ${backendSource}`,
+            'Se creó un paquete de personaje con malla, rig y animaciones base.',
           metadata: {
             type: 'model',
           },
@@ -491,31 +615,32 @@ export function useAIAssetActions(params: {
       status: 'processing',
       progress: 5,
       stage: toHumanCharacterStage('queued'),
-      provider: 'profile_a',
+      deliveryPath: 'compatible',
     });
 
     try {
       const startResult = await requestCharacterJobStart({
         prompt,
+        planId: activePlannerPlanId,
         style: 'realista',
         targetEngine: 'generic',
         includeAnimations: true,
         includeBlendshapes: true,
       });
 
-      if (!startResult.response.ok || typeof startResult.data?.jobId !== 'string') {
+      if (!startResult.response.ok || typeof startResult.data?.taskToken !== 'string') {
         // If jobs backend is not available, keep old behavior via full route.
         setActiveTask((prev) => prev ? {
           ...prev,
           progress: 40,
-          stage: 'fallback local',
-          provider: 'local_fallback',
+          stage: 'ajustando una versión compatible',
+          deliveryPath: 'fallback',
         } : null);
         await importViaCharacterRoute();
         return;
       }
 
-      const jobId = startResult.data.jobId;
+      const jobId = startResult.data.taskToken;
       activeCharacterJobIdRef.current = jobId;
       let status: string = typeof startResult.data.status === 'string' ? startResult.data.status : 'queued';
       let progress = 8;
@@ -544,10 +669,10 @@ export function useAIAssetActions(params: {
           ...prev,
           progress,
           stage: toHumanCharacterStage(stage),
-          provider: 'profile_a',
+          deliveryPath: 'compatible',
         } : null);
 
-        if (status === 'completed') break;
+        if (status === 'completed' && statusResult.data.readyToFinalize) break;
         if (status === 'canceled') {
           throw new Error('CANCELLED_BY_USER');
         }
@@ -555,14 +680,14 @@ export function useAIAssetActions(params: {
           const errorMessage =
             typeof statusResult.data.error === 'string'
               ? statusResult.data.error
-              : 'Backend de personajes reportó fallo';
+              : 'El servicio de personajes no pudo completar la solicitud';
           throw new Error(errorMessage);
         }
         await sleep(1000);
       }
 
       if (status !== 'completed') {
-        throw new Error('Timeout esperando el backend de personajes');
+        throw new Error('La generación del personaje tardó demasiado en completarse');
       }
 
       ensureNotCanceled(jobId);
@@ -570,7 +695,7 @@ export function useAIAssetActions(params: {
       setActiveTask((prev) => prev ? {
         ...prev,
         progress: 96,
-        stage: 'importando paquete',
+        stage: 'importando personaje',
       } : null);
 
       await importViaCharacterRoute(jobId);
@@ -602,11 +727,11 @@ export function useAIAssetActions(params: {
         content:
           `❌ **No se pudo generar el personaje**\n\n` +
           `${String(error)}\n` +
-          `Tip: revisa backend Profile A y sesión activa.`,
+          'Tip: revisa tu sesión y vuelve a intentarlo.',
         metadata: { type: 'error' },
       });
     }
-  }, [addAsset, addChatMessage, generate3DModel, getCapabilityStatus, setActiveTask]);
+  }, [activePlannerPlanId, addAsset, addChatMessage, generate3DModel, getCapabilityStatus, sealAssistantResultApplied, setActiveTask]);
 
   return {
     generateImageAsset,

@@ -162,6 +162,17 @@ export abstract class UIWidget {
   getChildren(): UIWidget[] {
     return [...this.children];
   }
+
+  /**
+   * Remove all child widgets
+   */
+  clearChildren(): void {
+    this.children.forEach((child) => {
+      child.parent = null;
+    });
+    this.children = [];
+    this.dirty = true;
+  }
   
   /**
    * Get parent
@@ -286,13 +297,20 @@ export class UICanvas extends UIWidget {
   
   constructor(id: string = 'root-canvas') {
     super(id, 'UICanvas');
-    this.createCanvas();
   }
   
   /**
    * Create the HTML canvas
    */
-  private createCanvas(): void {
+  private createCanvas(): HTMLCanvasElement | null {
+    if (typeof document === 'undefined') {
+      return null;
+    }
+
+    if (this.canvas) {
+      return this.canvas;
+    }
+
     this.canvas = document.createElement('canvas');
     this.canvas.id = this.id;
     this.canvas.style.position = 'absolute';
@@ -300,10 +318,66 @@ export class UICanvas extends UIWidget {
     this.canvas.style.left = '0';
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
-    this.canvas.style.pointerEvents = 'auto';
+    this.canvas.style.pointerEvents = 'none';
+    this.canvas.style.zIndex = '12';
     
     this.ctx = this.canvas.getContext('2d');
     this.resize();
+    return this.canvas;
+  }
+
+  /**
+   * Attach canvas to a container
+   */
+  attach(container: HTMLElement | null = null): HTMLCanvasElement | null {
+    const canvas = this.createCanvas();
+    if (!canvas || typeof document === 'undefined') {
+      return canvas;
+    }
+
+    const target = container ?? document.body;
+    if (!target) return canvas;
+
+    if (canvas.parentElement !== target) {
+      canvas.parentElement?.removeChild(canvas);
+      target.appendChild(canvas);
+    }
+
+    this.resize();
+    return canvas;
+  }
+
+  /**
+   * Detach canvas from the DOM
+   */
+  detach(): void {
+    this.canvas?.parentElement?.removeChild(this.canvas);
+  }
+
+  /**
+   * Destroy canvas resources
+   */
+  destroy(): void {
+    this.detach();
+    this.ctx = null;
+    this.canvas = null;
+    this.clearChildren();
+  }
+
+  /**
+   * Enable or disable pointer interaction
+   */
+  setInteractionEnabled(enabled: boolean): void {
+    if (!this.canvas) return;
+    this.canvas.style.pointerEvents = enabled ? 'auto' : 'none';
+  }
+
+  /**
+   * Set DOM z-index
+   */
+  setZIndex(zIndex: number): void {
+    if (!this.canvas) return;
+    this.canvas.style.zIndex = String(zIndex);
   }
   
   /**
@@ -317,7 +391,7 @@ export class UICanvas extends UIWidget {
    * Resize canvas
    */
   resize(): void {
-    if (!this.canvas) return;
+    if (!this.canvas || typeof window === 'undefined' || typeof document === 'undefined') return;
     
     const container = this.canvas.parentElement || document.body;
     const rect = container.getBoundingClientRect();
@@ -337,6 +411,13 @@ export class UICanvas extends UIWidget {
     }
     
     this.dirty = true;
+  }
+
+  /**
+   * Get canvas resolution
+   */
+  getResolution(): THREE.Vector2 {
+    return this.resolution.clone();
   }
   
   /**
@@ -395,7 +476,39 @@ export class UICanvas extends UIWidget {
    */
   update(deltaTime: number): void {
     super.update(deltaTime);
-    this.render(this.ctx!);
+    if (this.ctx && this.canvas) {
+      this.render(this.ctx);
+    }
+  }
+
+  /**
+   * Find top-most widget at a canvas-space position
+   */
+  findWidgetAtPosition(position: THREE.Vector2): UIWidget | null {
+    const children = this.getChildren();
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const hit = this.findWidgetRecursive(children[index], position);
+      if (hit) {
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  private findWidgetRecursive(widget: UIWidget, position: THREE.Vector2): UIWidget | null {
+    if (!widget.enabled || widget.getStyle().visible === false) {
+      return null;
+    }
+
+    const children = widget.getChildren();
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const hit = this.findWidgetRecursive(children[index], position);
+      if (hit) {
+        return hit;
+      }
+    }
+
+    return widget.containsPoint(position) ? widget : null;
   }
 }
 
@@ -977,6 +1090,11 @@ export class UIManager {
    * Create a new canvas
    */
   createCanvas(id: string): UICanvas {
+    const existing = this.canvases.get(id);
+    if (existing) {
+      return existing;
+    }
+
     const canvas = new UICanvas(id);
     this.canvases.set(id, canvas);
     return canvas;
@@ -993,7 +1111,24 @@ export class UIManager {
    * Remove canvas
    */
   removeCanvas(id: string): void {
+    const canvas = this.canvases.get(id);
+    canvas?.destroy();
     this.canvases.delete(id);
+    if (this.focusedWidget && this.findWidgetOwner(this.focusedWidget) === id) {
+      this.focusedWidget = null;
+    }
+    if (this.hoveredWidget && this.findWidgetOwner(this.hoveredWidget) === id) {
+      this.hoveredWidget = null;
+    }
+  }
+
+  /**
+   * Clear all canvases and transient widget state
+   */
+  reset(): void {
+    Array.from(this.canvases.keys()).forEach((id) => this.removeCanvas(id));
+    this.focusedWidget = null;
+    this.hoveredWidget = null;
   }
   
   /**
@@ -1023,7 +1158,14 @@ export class UIManager {
    * Find widget at position
    */
   findWidgetAtPosition(position: THREE.Vector2): UIWidget | null {
-    // This would do a hit test across all canvases
+    const canvases = Array.from(this.canvases.values());
+    for (let index = canvases.length - 1; index >= 0; index -= 1) {
+      const canvas = canvases[index];
+      const hit = canvas.findWidgetAtPosition(canvas.screenToCanvas(position));
+      if (hit) {
+        return hit;
+      }
+    }
     return null;
   }
   
@@ -1039,6 +1181,20 @@ export class UIManager {
    */
   getFocusedWidget(): UIWidget | null {
     return this.focusedWidget;
+  }
+
+  private findWidgetOwner(widget: UIWidget): string | null {
+    for (const [canvasId, canvas] of this.canvases.entries()) {
+      if (canvas === widget) return canvasId;
+      if (this.containsWidget(canvas, widget)) {
+        return canvasId;
+      }
+    }
+    return null;
+  }
+
+  private containsWidget(root: UIWidget, target: UIWidget): boolean {
+    return root.getChildren().some((child) => child === target || this.containsWidget(child, target));
   }
 }
 

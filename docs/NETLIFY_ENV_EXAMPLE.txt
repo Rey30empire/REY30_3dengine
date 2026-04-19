@@ -37,7 +37,7 @@ INVITE_PROFILE_OPENAI_API_KEY=replace_with_openai_key_for_shared_profile
 REY30_SHARED_ACCESS_TOKEN=replace_with_shared_access_token
 REY30_SHARED_ACCESS_EMAIL=shared-access@rey30.local
 REY30_SHARED_ACCESS_NAME=REY30 Shared Access
-REY30_SHARED_ACCESS_ROLE=OWNER
+REY30_SHARED_ACCESS_ROLE=VIEWER
 
 # Netlify Blobs
 REY30_SCRIPT_STORAGE_BACKEND=netlify-blobs
@@ -57,3 +57,4 @@ Notas:
 - INVITE_PROFILE_OPENAI_API_KEY se puede rotar con:
   $env:INVITE_PROFILE_OPENAI_API_KEY="sk-proj-tu-clave-nueva"
   npx tsx scripts/rotate-invite-openai-key.ts
+- El token compartido siempre queda limitado a permisos de colaborador (VIEWER) aunque un env viejo intente elevarlo.

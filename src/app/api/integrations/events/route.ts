@@ -4,6 +4,7 @@ import {
   authenticateIntegrationRequest,
   integrationAuthErrorToResponse,
 } from '@/lib/security/integration-auth';
+import { persistIntegrationEvent } from '@/lib/server/external-integration-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
   let integrationId = '';
   try {
     const rawBody = await request.text();
-    const integration = authenticateIntegrationRequest({
+    const integration = await authenticateIntegrationRequest({
       request,
       rawBody,
       requiredScope: 'events:write',
@@ -57,6 +58,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const persisted = await persistIntegrationEvent({
+      integrationId: integration.id,
+      eventType,
+      source: String(body.source || ''),
+      payload: body.payload,
+      idempotencyKey: String(body.idempotencyKey || ''),
+      rawBody,
+    });
+
     await logSecurityEvent({
       request,
       action: 'integration.events.write',
@@ -67,15 +77,19 @@ export async function POST(request: NextRequest) {
         source: String(body.source || '').slice(0, 120),
         idempotencyKey: String(body.idempotencyKey || '').slice(0, 120),
         bodySizeBytes: Buffer.byteLength(rawBody, 'utf8'),
+        recordId: persisted.record.id,
+        duplicate: persisted.duplicate,
       },
     });
 
     return NextResponse.json({
       ok: true,
       accepted: true,
+      alreadyAccepted: persisted.duplicate,
       integrationId: integration.id,
       scope: 'events:write',
       eventType,
+      recordId: persisted.record.id,
       receivedAt: new Date().toISOString(),
     });
   } catch (error) {

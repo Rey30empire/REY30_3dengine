@@ -6,6 +6,11 @@
 import { z } from 'zod';
 import { createTool } from './ToolRegistry';
 import type { ToolDefinition } from '../types';
+import {
+  createDefaultAnimatorEditorState,
+  createLibraryClip,
+  serializeAnimatorEditorState,
+} from '@/engine/editor/animationEditorState';
 import { useEngineStore } from '@/store/editorStore';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -123,9 +128,47 @@ export const phys_addCharacterController = createTool()
   .permission('write')
   .cost({ cpu: 10, gpu: 5, memory: 1, time: 20, risk: 'low' })
   .executor(async (params) => {
+    const { entities, updateEntity } = useEngineStore.getState();
+    const entity = entities.get(params.entityId);
+
+    if (!entity) {
+      return {
+        success: false,
+        error: { code: 'ENTITY_NOT_FOUND', message: 'Entity not found', recoverable: false },
+        duration: 1,
+        sideEffects: [],
+      };
+    }
+
+    entity.components.set('PlayerController', {
+      id: uuidv4(),
+      type: 'PlayerController',
+      data: {
+        speed: 4.5,
+        jumpForce: 10,
+        sensitivity: 2,
+        canDoubleJump: false,
+        height: params.height ?? 1.8,
+        radius: params.radius ?? 0.35,
+        stepOffset: params.stepOffset ?? 0.4,
+        slopeLimit: params.slopeLimit ?? 45,
+      },
+      enabled: true,
+    });
+
+    updateEntity(params.entityId, { components: new Map(entity.components) });
+
     return {
       success: true,
-      data: { characterController: params },
+      data: {
+        characterController: {
+          entityId: params.entityId,
+          height: params.height ?? 1.8,
+          radius: params.radius ?? 0.35,
+          stepOffset: params.stepOffset ?? 0.4,
+          slopeLimit: params.slopeLimit ?? 45,
+        },
+      },
       duration: 20,
       sideEffects: [{ type: 'character_controller_added', entityId: params.entityId, description: 'Character controller added' }],
     };
@@ -587,7 +630,33 @@ export const mount_createHorse = createTool()
         ['Animator', {
           id: uuidv4(),
           type: 'Animator',
-          data: { animations: ['idle', 'walk', 'trot', 'gallop'] },
+          data: (() => {
+            const baseState = createDefaultAnimatorEditorState(params.name || 'Horse');
+            const walkClip = createLibraryClip('Walk Cycle');
+            return serializeAnimatorEditorState(
+              {
+                controllerId: null,
+                currentAnimation: walkClip.name,
+                parameters: { locomotion: 'walk', grounded: true, speed: 0.55 },
+              },
+              {
+                ...baseState,
+                activeClipId: walkClip.id,
+                clips: [baseState.clips[0], walkClip],
+                nlaStrips: [
+                  {
+                    id: uuidv4(),
+                    name: `${walkClip.name}_Main`,
+                    clipId: walkClip.id,
+                    start: 0,
+                    end: walkClip.duration,
+                    blendMode: 'replace',
+                    muted: false,
+                  },
+                ],
+              }
+            );
+          })(),
           enabled: true,
         }],
         ['Mount', {

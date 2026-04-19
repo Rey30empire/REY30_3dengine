@@ -41,6 +41,50 @@ function readEnvFileIfExists(filePath) {
   return parseEnvContents(readFileSync(filePath, 'utf8'));
 }
 
+export function collectProductionEnvInputs(options = {}) {
+  const root = options.root || process.cwd();
+  const envFiles = options.envFiles || [
+    '.env',
+    '.env.local',
+    '.env.production',
+    '.env.production.local',
+    '.env.production.example',
+  ];
+  /** @type {Record<string, string>} */
+  const merged = {};
+  /** @type {Set<string>} */
+  const explicitKeys = new Set();
+
+  for (const fileName of envFiles) {
+    const fileValues = readEnvFileIfExists(path.join(root, fileName));
+    for (const [key, value] of Object.entries(fileValues)) {
+      merged[key] = value;
+      explicitKeys.add(key);
+    }
+  }
+
+  for (const [key, value] of Object.entries(options.env || process.env)) {
+    if (value !== undefined) {
+      merged[key] = String(value);
+      explicitKeys.add(key);
+    }
+  }
+
+  for (const key of Object.keys(merged)) {
+    if (isPlaceholderValue(key, merged[key])) {
+      delete merged[key];
+      explicitKeys.delete(key);
+    }
+  }
+
+  return {
+    root,
+    envFiles,
+    merged,
+    explicitKeys: Array.from(explicitKeys),
+  };
+}
+
 function isPlaceholderValue(key, value) {
   const normalized = String(value || '').trim();
   if (!normalized) return true;
@@ -81,32 +125,14 @@ const DEFAULT_LOCAL_PRODUCTION_DATABASE_URL =
  * @returns {Record<string, string>}
  */
 export function resolveProductionEnv(options = {}) {
-  const root = options.root || process.cwd();
-  const envFiles = options.envFiles || [
-    '.env',
-    '.env.local',
-    '.env.production',
-    '.env.production.local',
-    '.env.production.example',
-  ];
-  /** @type {Record<string, string>} */
-  const merged = {};
+  return resolveProductionEnvWithMetadata(options).resolved;
+}
 
-  for (const fileName of envFiles) {
-    Object.assign(merged, readEnvFileIfExists(path.join(root, fileName)));
-  }
-
-  for (const [key, value] of Object.entries(options.env || process.env)) {
-    if (value !== undefined) {
-      merged[key] = String(value);
-    }
-  }
-
-  for (const key of Object.keys(merged)) {
-    if (isPlaceholderValue(key, merged[key])) {
-      delete merged[key];
-    }
-  }
+export function resolveProductionEnvWithMetadata(options = {}) {
+  const inputs = collectProductionEnvInputs(options);
+  const merged = {
+    ...inputs.merged,
+  };
 
   const databaseUrl = (
     resolveDatabaseUrl(merged) ||
@@ -122,6 +148,8 @@ export function resolveProductionEnv(options = {}) {
     REY30_ALLOW_OPEN_REGISTRATION_REMOTE:
       (merged.REY30_ALLOW_OPEN_REGISTRATION_REMOTE || 'false').trim().toLowerCase(),
   };
+  /** @type {string[]} */
+  const generatedKeys = [];
 
   if (resolved.REY30_REGISTRATION_MODE === 'open') {
     resolved.REY30_REGISTRATION_MODE = 'invite_only';
@@ -130,35 +158,43 @@ export function resolveProductionEnv(options = {}) {
 
   if (!resolved.REY30_BOOTSTRAP_OWNER_TOKEN) {
     resolved.REY30_BOOTSTRAP_OWNER_TOKEN = randomHex();
+    generatedKeys.push('REY30_BOOTSTRAP_OWNER_TOKEN');
   }
 
   if (resolved.REY30_REGISTRATION_MODE === 'invite_only' && !resolved.REY30_REGISTRATION_INVITE_TOKEN) {
     resolved.REY30_REGISTRATION_INVITE_TOKEN = randomHex();
+    generatedKeys.push('REY30_REGISTRATION_INVITE_TOKEN');
   }
 
   if (!resolved.REY30_ENCRYPTION_KEY && !resolved.NEXTAUTH_SECRET) {
     resolved.REY30_ENCRYPTION_KEY = randomBase64();
+    generatedKeys.push('REY30_ENCRYPTION_KEY');
   }
 
   if (!resolved.REY30_ALLOWED_ORIGINS) {
     resolved.REY30_ALLOWED_ORIGINS = 'http://127.0.0.1:3000,http://localhost:3000';
+    generatedKeys.push('REY30_ALLOWED_ORIGINS');
   }
 
   if (!resolved.REY30_REMOTE_FETCH_ALLOWLIST_ASSETS) {
     resolved.REY30_REMOTE_FETCH_ALLOWLIST_ASSETS = '127.0.0.1,localhost';
+    generatedKeys.push('REY30_REMOTE_FETCH_ALLOWLIST_ASSETS');
   }
 
   if (!resolved.REY30_OPS_TOKEN) {
     resolved.REY30_OPS_TOKEN = randomHex();
+    generatedKeys.push('REY30_OPS_TOKEN');
   }
 
   if (!resolved.SMOKE_USER_EMAIL || !resolved.SMOKE_USER_PASSWORD) {
     const smokeCredentials = buildDefaultSmokeCredentials();
     if (!resolved.SMOKE_USER_EMAIL) {
       resolved.SMOKE_USER_EMAIL = smokeCredentials.email;
+      generatedKeys.push('SMOKE_USER_EMAIL');
     }
     if (!resolved.SMOKE_USER_PASSWORD) {
       resolved.SMOKE_USER_PASSWORD = smokeCredentials.password;
+      generatedKeys.push('SMOKE_USER_PASSWORD');
     }
   }
 
@@ -168,7 +204,16 @@ export function resolveProductionEnv(options = {}) {
   if (!hasDistributedRateLimit) {
     resolved.REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION =
       (resolved.REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION || 'true').trim().toLowerCase();
+    if (!merged.REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION) {
+      generatedKeys.push('REY30_ALLOW_IN_MEMORY_RATE_LIMIT_PRODUCTION');
+    }
   }
 
-  return resolved;
+  return {
+    resolved,
+    metadata: {
+      explicitKeys: inputs.explicitKeys,
+      generatedKeys,
+    },
+  };
 }

@@ -1,0 +1,159 @@
+name: Staging Hardening Restore Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Staging base URL. Falls back to STAGING_BASE_URL.
+        required: false
+        type: string
+      requests:
+        description: Load requests for hardening drill.
+        required: true
+        default: '1000'
+        type: string
+      concurrency:
+        description: Load concurrency for hardening drill.
+        required: true
+        default: '50'
+        type: string
+      timeout_ms:
+        description: Per-request timeout for load probe.
+        required: true
+        default: '30000'
+        type: string
+      backup_id:
+        description: Optional backup id to restore. Empty means restore backup created by this run.
+        required: false
+        type: string
+      confirm_restore:
+        description: Type RESTORE_NOW to execute real restore in staging.
+        required: true
+        default: TYPE_RESTORE_NOW
+        type: string
+
+concurrency:
+  group: staging-hardening-restore
+  cancel-in-progress: false
+
+jobs:
+  staging-hardening-restore-probe:
+    name: Load + real restore + external probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: staging
+    env:
+      STAGING_BASE_URL: ${{ inputs.base_url || vars.STAGING_BASE_URL || secrets.STAGING_BASE_URL }}
+      REY30_OPS_TOKEN: ${{ secrets.REY30_OPS_TOKEN }}
+      REY30_RUNTIME_FORENSICS_PROMETHEUS_PROBE_URL: ${{ vars.REY30_RUNTIME_FORENSICS_PROMETHEUS_PROBE_URL || secrets.REY30_RUNTIME_FORENSICS_PROMETHEUS_PROBE_URL }}
+      REY30_RUNTIME_FORENSICS_ALERTMANAGER_URL: ${{ vars.REY30_RUNTIME_FORENSICS_ALERTMANAGER_URL || secrets.REY30_RUNTIME_FORENSICS_ALERTMANAGER_URL }}
+      REY30_RUNTIME_FORENSICS_PROBE_PUBLISH_URL: ${{ vars.REY30_RUNTIME_FORENSICS_PROBE_PUBLISH_URL || secrets.REY30_RUNTIME_FORENSICS_PROBE_PUBLISH_URL || inputs.base_url || vars.STAGING_BASE_URL || secrets.STAGING_BASE_URL }}
+      GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate staging inputs
+        run: |
+          if [ -z "$STAGING_BASE_URL" ]; then
+            echo "STAGING_BASE_URL is missing. Configure workflow input, repo/environment var, or secret."
+            exit 1
+          fi
+          if [ -z "$REY30_OPS_TOKEN" ]; then
+            echo "REY30_OPS_TOKEN secret is missing."
+            exit 1
+          fi
+          if [ "${{ inputs.confirm_restore }}" != "RESTORE_NOW" ]; then
+            echo "Real restore is blocked. Set confirm_restore to RESTORE_NOW."
+            exit 1
+          fi
+          if [ -z "$REY30_RUNTIME_FORENSICS_PROMETHEUS_PROBE_URL" ]; then
+            echo "REY30_RUNTIME_FORENSICS_PROMETHEUS_PROBE_URL is missing."
+            exit 1
+          fi
+
+      - name: Run hardening drill against staging
+        run: |
+          node scripts/production-hardening-drill.mjs \
+            --base-url "$STAGING_BASE_URL" \
+            --ops-token "$REY30_OPS_TOKEN" \
+            --requests "${{ inputs.requests }}" \
+            --concurrency "${{ inputs.concurrency }}" \
+            --timeout-ms "${{ inputs.timeout_ms }}" \
+            --report-path output/staging-hardening-drill.json
+
+      - name: Select restore backup id
+        id: restore_backup
+        run: |
+          INPUT_BACKUP_ID="${{ inputs.backup_id }}"
+          if [ -n "$INPUT_BACKUP_ID" ]; then
+            BACKUP_ID="$INPUT_BACKUP_ID"
+          else
+            BACKUP_ID=$(node -e "const fs=require('fs');const o=JSON.parse(fs.readFileSync('output/staging-hardening-drill.json','utf8'));process.stdout.write(o.backup?.backupId||'')")
+          fi
+          if [ -z "$BACKUP_ID" ]; then
+            echo "No backup id available for real restore."
+            exit 1
+          fi
+          echo "backup_id=$BACKUP_ID" >> "$GITHUB_OUTPUT"
+          echo "Selected restore backup id: $BACKUP_ID"
+
+      - name: Verify selected backup before real restore
+        run: |
+          node scripts/ops-backup-client.mjs verify \
+            --base-url "$STAGING_BASE_URL" \
+            --ops-token "$REY30_OPS_TOKEN" \
+            --backup-id "${{ steps.restore_backup.outputs.backup_id }}" \
+            --report-path output/staging-restore-verify.json
+
+      - name: Restore dry-run before real restore
+        run: |
+          node scripts/ops-backup-client.mjs restore-dry-run \
+            --base-url "$STAGING_BASE_URL" \
+            --ops-token "$REY30_OPS_TOKEN" \
+            --backup-id "${{ steps.restore_backup.outputs.backup_id }}" \
+            --report-path output/staging-restore-dry-run.json
+
+      - name: Execute real restore in staging
+        run: |
+          node scripts/ops-backup-client.mjs restore-real \
+            --base-url "$STAGING_BASE_URL" \
+            --ops-token "$REY30_OPS_TOKEN" \
+            --backup-id "${{ steps.restore_backup.outputs.backup_id }}" \
+            --confirm "RESTORE_NOW" \
+            --report-path output/staging-restore-real.json
+
+      - name: Run external Prometheus/Alertmanager probe
+        run: |
+          node scripts/runtime-forensics-prometheus-probe.mjs \
+            --metrics-url "$REY30_RUNTIME_FORENSICS_PROMETHEUS_PROBE_URL" \
+            --ops-token "$REY30_OPS_TOKEN" \
+            --alertmanager-url "$REY30_RUNTIME_FORENSICS_ALERTMANAGER_URL" \
+            --publish-url "$REY30_RUNTIME_FORENSICS_PROBE_PUBLISH_URL" \
+            --timeout-ms "${{ inputs.timeout_ms }}" \
+            --report-path output/staging-runtime-forensics-prometheus-probe.json
+
+      - name: Upload staging hardening artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-hardening-restore-probe-${{ github.run_id }}
+          path: output/*.json
+          if-no-files-found: ignore
+
+      - name: Trigger incident alert webhook
+        if: failure() && secrets.ALERT_WEBHOOK_URL != ''
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          node scripts/trigger-alert-webhook.mjs \
+            --severity "critical" \
+            --environment "staging" \
+            --message "Staging hardening/restore/probe workflow failed for REY30." \
+            --run-url "$GITHUB_RUN_URL"

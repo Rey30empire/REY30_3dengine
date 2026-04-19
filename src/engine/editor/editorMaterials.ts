@@ -1,3 +1,5 @@
+import { MATERIAL_PRESET_REGISTRY } from './materialPresetRegistry';
+
 export interface EditorMaterialColor {
   r: number;
   g: number;
@@ -237,92 +239,15 @@ function hslToRgb(h: number, s: number, l: number) {
   };
 }
 
-export const MATERIAL_PRESETS: EditorMaterialDefinition[] = [
+export const MATERIAL_PRESETS: EditorMaterialDefinition[] = MATERIAL_PRESET_REGISTRY.map((entry) =>
   withMaterialDefaults({
-    id: 'default',
-    name: 'Default',
-    albedoColor: { r: 0.54, g: 0.56, b: 0.64, a: 1 },
-    metallic: 0.08,
-    roughness: 0.62,
-    normalIntensity: 1,
-    emissiveColor: { r: 0, g: 0, b: 0 },
-    emissiveIntensity: 0,
-    occlusionStrength: 1,
-    alphaCutoff: 0.5,
-    doubleSided: false,
-    transparent: false,
-  }),
-  withMaterialDefaults({
-    id: 'metal',
-    name: 'Metal',
-    albedoColor: { r: 0.73, g: 0.77, b: 0.83, a: 1 },
-    metallic: 0.88,
-    roughness: 0.24,
-    normalIntensity: 1,
-    emissiveColor: { r: 0, g: 0, b: 0 },
-    emissiveIntensity: 0,
-    occlusionStrength: 1,
-    alphaCutoff: 0.5,
-    doubleSided: false,
-    transparent: false,
-  }),
-  withMaterialDefaults({
-    id: 'plastic',
-    name: 'Plastic',
-    albedoColor: { r: 0.14, g: 0.54, b: 0.98, a: 1 },
-    metallic: 0.04,
-    roughness: 0.36,
-    normalIntensity: 1,
-    emissiveColor: { r: 0, g: 0, b: 0 },
-    emissiveIntensity: 0,
-    occlusionStrength: 1,
-    alphaCutoff: 0.5,
-    doubleSided: false,
-    transparent: false,
-  }),
-  withMaterialDefaults({
-    id: 'glass',
-    name: 'Glass',
-    albedoColor: { r: 0.82, g: 0.92, b: 1, a: 0.28 },
-    metallic: 0,
-    roughness: 0.08,
-    normalIntensity: 1,
-    emissiveColor: { r: 0, g: 0, b: 0 },
-    emissiveIntensity: 0,
-    occlusionStrength: 1,
-    alphaCutoff: 0.08,
-    doubleSided: true,
-    transparent: true,
-  }),
-  withMaterialDefaults({
-    id: 'emissive',
-    name: 'Emissive',
-    albedoColor: { r: 0.05, g: 0.06, b: 0.09, a: 1 },
-    metallic: 0,
-    roughness: 0.78,
-    normalIntensity: 1,
-    emissiveColor: { r: 0.18, g: 0.86, b: 1 },
-    emissiveIntensity: 2.4,
-    occlusionStrength: 1,
-    alphaCutoff: 0.5,
-    doubleSided: false,
-    transparent: false,
-  }),
-  withMaterialDefaults({
-    id: 'clay',
-    name: 'Clay',
-    albedoColor: { r: 0.71, g: 0.47, b: 0.39, a: 1 },
-    metallic: 0,
-    roughness: 0.88,
-    normalIntensity: 1,
-    emissiveColor: { r: 0, g: 0, b: 0 },
-    emissiveIntensity: 0,
-    occlusionStrength: 1,
-    alphaCutoff: 0.5,
-    doubleSided: false,
-    transparent: false,
-  }),
-];
+    ...entry.params,
+    albedoColor: {
+      ...entry.params.albedoColor,
+      a: entry.params.albedoColor.a ?? 1,
+    },
+  })
+);
 
 const MATERIAL_PRESET_MAP = new Map(
   MATERIAL_PRESETS.map((preset) => [preset.id, preset] as const)
@@ -349,9 +274,13 @@ export function resolveEditorMaterial(
       : 'default';
   const preset = getMaterialPreset(materialId);
   const override = asRecord(meshRendererData?.material);
+  const resolvedId =
+    typeof override?.id === 'string' && override.id.trim().length > 0
+      ? override.id.trim()
+      : preset.id;
 
   return {
-    id: preset.id,
+    id: resolvedId,
     name: typeof override?.name === 'string' ? override.name : preset.name,
     albedoColor: readColor(override?.albedoColor, preset.albedoColor),
     metallic: clampUnit(Number(override?.metallic), preset.metallic),
@@ -403,6 +332,57 @@ export function resolveEditorMaterial(
         ? override.weightedNormalsKeepSharp
         : preset.weightedNormalsKeepSharp,
   };
+}
+
+export function sanitizeMaterialDefinition(
+  value: unknown,
+  fallbackId = 'default'
+): EditorMaterialDefinition | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const materialId =
+    typeof record.id === 'string' && record.id.trim().length > 0
+      ? record.id.trim()
+      : fallbackId;
+
+  return resolveEditorMaterial({
+    materialId,
+    material: record,
+  });
+}
+
+export function collectMaterialTextureAssetPaths(
+  definition: EditorMaterialDefinition
+): string[] {
+  return MATERIAL_TEXTURE_SLOTS.flatMap((slot) => {
+    const map = definition.textureMaps[slot];
+    return map.enabled && map.assetPath ? [map.assetPath] : [];
+  }).filter((assetPath, index, items) => items.indexOf(assetPath) === index);
+}
+
+export function summarizeEditorMaterial(definition: EditorMaterialDefinition) {
+  const enabledMaps = MATERIAL_TEXTURE_SLOTS.filter(
+    (slot) => definition.textureMaps[slot].enabled && definition.textureMaps[slot].assetPath
+  );
+  const parts = [
+    `metal ${definition.metallic.toFixed(2)}`,
+    `rough ${definition.roughness.toFixed(2)}`,
+  ];
+
+  if (definition.transparent) {
+    parts.push('transparent');
+  }
+  if (definition.doubleSided) {
+    parts.push('double-sided');
+  }
+  if (enabledMaps.length > 0) {
+    parts.push(`maps ${enabledMaps.join(', ')}`);
+  }
+
+  return `${definition.name} (${definition.id}) · ${parts.join(' · ')}`;
 }
 
 export function buildMaterialVisualSignature(

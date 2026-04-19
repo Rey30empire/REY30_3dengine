@@ -7,6 +7,12 @@ import * as CANNON from 'cannon-es';
 import * as THREE from 'three';
 import { v4 as uuidv4 } from 'uuid';
 
+function createUprightCapsuleRotation(): CANNON.Quaternion {
+  const rotation = new CANNON.Quaternion();
+  rotation.setFromEuler(0, 0, Math.PI / 2);
+  return rotation;
+}
+
 /**
  * Character controller options
  */
@@ -247,7 +253,7 @@ export class CharacterController {
     
     // Add shape with offset (center the capsule)
     const shapeOffset = new CANNON.Vec3(0, 0, 0);
-    this.body.addShape(this.shape, shapeOffset);
+    this.body.addShape(this.shape, shapeOffset, createUprightCapsuleRotation());
     
     // Add spheres for better capsule collision
     const topSphere = new CANNON.Sphere(this.radius);
@@ -472,7 +478,7 @@ export class CharacterController {
       Math.max(cylinderHeight, 0.1),
       16
     );
-    this.body.addShape(newShape, new CANNON.Vec3(0, 0, 0));
+    this.body.addShape(newShape, new CANNON.Vec3(0, 0, 0), createUprightCapsuleRotation());
     
     const topSphere = new CANNON.Sphere(this.radius);
     const bottomSphere = new CANNON.Sphere(this.radius);

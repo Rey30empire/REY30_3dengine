@@ -24,6 +24,7 @@ export async function POST(request: NextRequest) {
         action: 'auth.token_login',
         status: 'denied',
         metadata: { reason: 'missing_token' },
+        durability: 'critical',
       });
       return NextResponse.json({ error: 'Token de acceso requerido.' }, { status: 400 });
     }
@@ -34,6 +35,7 @@ export async function POST(request: NextRequest) {
         action: 'auth.token_login',
         status: 'denied',
         metadata: { reason: 'invalid_token' },
+        durability: 'critical',
       });
       return NextResponse.json({ error: 'Token de acceso inválido.' }, { status: 401 });
     }
@@ -45,6 +47,7 @@ export async function POST(request: NextRequest) {
         action: 'auth.token_login',
         status: 'error',
         metadata: { reason: 'shared_access_not_configured' },
+        durability: 'critical',
       });
       return NextResponse.json(
         { error: 'Acceso compartido no configurado en el servidor.' },
@@ -65,7 +68,7 @@ export async function POST(request: NextRequest) {
       policy: {
         byok: false,
         sharedAccess: true,
-        note: 'Acceso compartido por token activado. La app usa credenciales del servidor.',
+        note: 'Acceso compartido por token activado. La app usa credenciales del servidor con permisos de colaborador.',
       },
     });
 
@@ -75,6 +78,7 @@ export async function POST(request: NextRequest) {
       action: 'auth.token_login',
       status: 'allowed',
       metadata: { role: user.role },
+      durability: 'critical',
     });
 
     return applySessionCookie(response, token, expiresAt);
@@ -84,6 +88,7 @@ export async function POST(request: NextRequest) {
       action: 'auth.token_login',
       status: 'error',
       metadata: { error: String(error) },
+      durability: 'critical',
     });
     return NextResponse.json({ error: 'No se pudo iniciar sesión con token.' }, { status: 500 });
   }

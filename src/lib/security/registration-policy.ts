@@ -11,16 +11,13 @@ export function allowLocalDevOpenRegistration(request: NextRequest): boolean {
   if (process.env.NODE_ENV !== 'development') return false;
   if (!isLocalRequest(request)) return false;
   const raw = (process.env.REY30_ALLOW_DEV_LOCAL_REGISTRATION || '').trim().toLowerCase();
-  return raw !== 'false';
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
 export function getRegistrationMode(): RegistrationMode {
   const raw = (process.env.REY30_REGISTRATION_MODE || '').trim().toLowerCase();
   if (raw === 'open' || raw === 'invite_only' || raw === 'allowlist') {
     return raw;
-  }
-  if (process.env.NODE_ENV === 'development') {
-    return 'open';
   }
   return 'invite_only';
 }

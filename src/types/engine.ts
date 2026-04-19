@@ -96,6 +96,21 @@ export interface CameraData {
   isMain: boolean;
 }
 
+// Audio Source
+export interface AudioSourceData {
+  clipId: string | null;
+  clip: string | null;
+  volume: number;
+  pitch: number;
+  loop: boolean;
+  playOnStart: boolean;
+  spatialBlend: number;
+  mixerGroup: string;
+  minDistance: number;
+  maxDistance: number;
+  rolloffFactor: number;
+}
+
 // Collider Types
 export interface ColliderData {
   type: 'box' | 'sphere' | 'capsule' | 'mesh';
@@ -126,9 +141,20 @@ export interface ScriptData {
 
 // Animator
 export interface AnimatorData {
-  controllerId: string;
+  controllerId: string | null;
   currentAnimation: string | null;
-  parameters: Record<string, number | boolean>;
+  parameters: Record<string, string | number | boolean>;
+  editor?: Record<string, unknown>;
+  runtime?: {
+    time: number;
+    duration: number;
+    activeClipId: string | null;
+    activeClipIds: string[];
+    activeClipNames: string[];
+    activeStripIds: string[];
+    activeStripNames: string[];
+    poseBoneCount: number;
+  };
 }
 
 // Health
@@ -142,11 +168,42 @@ export interface HealthData {
   team?: 'player' | 'enemy' | 'neutral';
 }
 
+export type WeaponTargetPreference = 'opposing' | 'player' | 'enemy' | 'neutral';
+
+export interface WeaponRuntimeData {
+  cooldownRemaining: number;
+  lastAttackAt: number | null;
+  lastAttackType: 'light' | 'heavy' | 'ai' | null;
+  lastTargetEntityId: string | null;
+  totalAttacks: number;
+  totalHits: number;
+  lastDamage: number;
+}
+
+export interface WeaponData {
+  category?: 'melee' | 'ranged' | 'projectile' | 'magic';
+  damage: number;
+  attackSpeed: number;
+  range: number;
+  heavyDamage?: number;
+  heavyAttackSpeed?: number;
+  heavyRange?: number;
+  targetTeam?: WeaponTargetPreference;
+  autoAcquireTarget?: boolean;
+  runtime?: Partial<WeaponRuntimeData>;
+}
+
 // Terrain
 export interface TerrainData {
   width: number;
   height: number;
   depth: number;
+  preset?: string;
+  segments?: number;
+  scale?: number;
+  octaves?: number;
+  erosionIterations?: number;
+  seed?: number;
   heightmap: number[];
   layers: TerrainLayer[];
 }
@@ -179,6 +236,59 @@ export interface SceneCollection {
   entityIds: string[];
 }
 
+export type ShadowQualityMode = 'low' | 'medium' | 'high' | 'ultra';
+
+export interface GlobalIlluminationSettings {
+  enabled: boolean;
+  intensity: number;
+  bounceCount: number;
+}
+
+export interface BakedLightmapSettings {
+  enabled: boolean;
+}
+
+export interface AdvancedLightingSettings {
+  shadowQuality: ShadowQualityMode;
+  globalIllumination: GlobalIlluminationSettings;
+  bakedLightmaps: BakedLightmapSettings;
+}
+
+export interface AdvancedLightingSettingsInput {
+  shadowQuality?: ShadowQualityMode;
+  globalIllumination?: Partial<GlobalIlluminationSettings>;
+  bakedLightmaps?: Partial<BakedLightmapSettings>;
+}
+
+export const DEFAULT_ADVANCED_LIGHTING_SETTINGS: AdvancedLightingSettings = {
+  shadowQuality: 'high',
+  globalIllumination: {
+    enabled: false,
+    intensity: 1,
+    bounceCount: 1,
+  },
+  bakedLightmaps: {
+    enabled: false,
+  },
+};
+
+export function resolveAdvancedLightingSettings(
+  settings?: AdvancedLightingSettingsInput | null
+): AdvancedLightingSettings {
+  return {
+    shadowQuality:
+      settings?.shadowQuality ?? DEFAULT_ADVANCED_LIGHTING_SETTINGS.shadowQuality,
+    globalIllumination: {
+      ...DEFAULT_ADVANCED_LIGHTING_SETTINGS.globalIllumination,
+      ...settings?.globalIllumination,
+    },
+    bakedLightmaps: {
+      ...DEFAULT_ADVANCED_LIGHTING_SETTINGS.bakedLightmaps,
+      ...settings?.bakedLightmaps,
+    },
+  };
+}
+
 export interface EnvironmentSettings {
   skybox: string | null;
   ambientLight: Color;
@@ -188,6 +298,7 @@ export interface EnvironmentSettings {
   directionalLightIntensity?: number;
   directionalLightAzimuth?: number;
   directionalLightElevation?: number;
+  advancedLighting?: AdvancedLightingSettings;
   fog: FogSettings | null;
   postProcessing: PostProcessingSettings;
 }
@@ -264,6 +375,7 @@ export type AssetType =
   | 'texture'
   | 'material'
   | 'modifier_preset'
+  | 'character_preset'
   | 'script'
   | 'animation'
   | 'audio'
@@ -345,6 +457,94 @@ export interface AgentTask {
 export type TaskStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
 // Chat Types
+export interface AgenticPipelineMessageMetadata {
+  pipelineId: string;
+  approved: boolean;
+  iteration: number;
+  status: string;
+  steps: Array<{
+    id: string;
+    title: string;
+    agentRole: string;
+    status: string;
+    evidenceCount: number;
+    errorCount: number;
+  }>;
+  tools: Array<{
+    name: string;
+    successCount: number;
+    failureCount: number;
+  }>;
+  validation: {
+    approved: boolean;
+    confidence: number;
+    matchedRequirements: string[];
+    missingRequirements: string[];
+    incorrectOutputs: string[];
+    retryInstructions: string[];
+  } | null;
+  runtimeScaffold?: {
+    createdCamera: boolean;
+    createdPlayer: boolean;
+    entityIds: string[];
+    summaries: string[];
+    sourceTool: string;
+  } | null;
+  sharedMemory?: {
+    analyses: Array<{
+      id: string;
+      toolName: string;
+      callId: string;
+      stepId: string;
+      agentRole: string;
+      scope: string;
+      summary: string;
+      output: Record<string, unknown>;
+      actionableRecommendations: Array<{
+        id: string;
+        approvalKey: string;
+        sourceToolName: string;
+        sourceCallId: string;
+        summary: string;
+        rationale: string;
+        priority: 'critical' | 'normal' | 'optional';
+        suggestedDomain: string;
+        suggestedCapabilities: string[];
+        suggestedToolNames: string[];
+        input: Record<string, unknown>;
+        confidence: number;
+        approvalStatus: 'pending' | 'approved' | 'rejected';
+      }>;
+      createdAt: string;
+    }>;
+    actionableRecommendations: Array<{
+      id: string;
+      approvalKey: string;
+      sourceToolName: string;
+      sourceCallId: string;
+      summary: string;
+      rationale: string;
+      priority: 'critical' | 'normal' | 'optional';
+      suggestedDomain: string;
+      suggestedCapabilities: string[];
+      suggestedToolNames: string[];
+      input: Record<string, unknown>;
+      confidence: number;
+      approvalStatus: 'pending' | 'approved' | 'rejected';
+    }>;
+  };
+  traces: Array<{
+    eventType: string;
+    severity: string;
+    actor: string;
+    message: string;
+    stepId?: string;
+    toolCallId?: string;
+    data?: Record<string, unknown>;
+    timestamp: string;
+  }>;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -356,6 +556,7 @@ export interface ChatMessage {
     actions?: ChatAction[];
     toolCalls?: MCPToolCallInfo[];
     results?: unknown;
+    agenticPipeline?: AgenticPipelineMessageMetadata;
     type?: string;
     modelUrl?: string;
     thumbnailUrl?: string;
@@ -443,6 +644,10 @@ export interface EditorState {
     category: string | null;
     token: number;
   } | null;
+  lightingBakeRequest?: {
+    sceneId: string;
+    token: number;
+  } | null;
   tool: EditorTool;
   mode: EditorMode;
   gridVisible: boolean;
@@ -510,6 +715,14 @@ export interface Addon {
   entryPoint: string;
   dependencies: string[];
   permissions: AddonPermission[];
+  category?: string;
+  workspaceHints?: string[];
+  installedAt?: string;
+  updatedAt?: string;
+  sourcePackagePath?: string | null;
+  assetCount?: number;
+  checksum?: string;
+  storageLocation?: 'filesystem' | 'netlify-blobs';
 }
 
 export type AddonPermission = 

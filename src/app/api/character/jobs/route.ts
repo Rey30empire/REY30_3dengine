@@ -1,40 +1,45 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeProjectKey } from '@/lib/project-key';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
-
-type CharacterJobRequest = {
-  prompt?: string;
-  style?: string;
-  targetEngine?: 'unity' | 'unreal' | 'generic';
-  includeAnimations?: boolean;
-  includeBlendshapes?: boolean;
-  references?: string[];
-};
-
-const REMOTE_BACKEND_URL = (process.env.REY30_CHARACTER_BACKEND_URL || '').trim();
-
-function getBackendBaseUrl(): string {
-  return REMOTE_BACKEND_URL.replace(/\/+$/, '');
-}
+import {
+  cancelCharacterJob,
+  createCharacterJob,
+  getCharacterJobStatus,
+  isCharacterBackendConfigured,
+  normalizeCharacterTaskStatus,
+  type CharacterJobRequest,
+  CharacterServiceError,
+} from '@/lib/server/character-service';
+import {
+  getCharacterGenerationJobRecord,
+  patchCharacterGenerationJobRecord,
+  upsertCharacterGenerationJobRecord,
+} from '@/lib/server/character-generation-store';
 
 function isAuthError(error: unknown): boolean {
   const msg = String(error);
   return msg.includes('UNAUTHORIZED') || msg.includes('FORBIDDEN');
 }
 
-function normalizeDetail(data: Record<string, unknown>, fallback: string): string {
-  if (typeof data.error === 'string' && data.error.trim().length > 0) return data.error;
-  if (typeof data.detail === 'string' && data.detail.trim().length > 0) return data.detail;
-  return fallback;
+function serviceUnavailableResponse() {
+  return NextResponse.json(
+    { success: false, error: 'La creación de personajes no está disponible en esta sesión.' },
+    { status: 501 }
+  );
+}
+
+function sanitizeServiceError(error: unknown, fallback: string) {
+  if (error instanceof CharacterServiceError) {
+    return NextResponse.json({ success: false, error: fallback }, { status: error.status });
+  }
+  return NextResponse.json({ success: false, error: fallback }, { status: 500 });
 }
 
 export async function POST(request: NextRequest) {
   try {
-    await requireSession(request, 'EDITOR');
-    if (!REMOTE_BACKEND_URL) {
-      return NextResponse.json(
-        { success: false, error: 'Character backend no configurado (REY30_CHARACTER_BACKEND_URL).' },
-        { status: 501 }
-      );
+    const user = await requireSession(request, 'EDITOR');
+    if (!isCharacterBackendConfigured()) {
+      return serviceUnavailableResponse();
     }
 
     const body = (await request.json()) as CharacterJobRequest;
@@ -43,49 +48,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Prompt requerido.' }, { status: 400 });
     }
 
-    const response = await fetch(`${getBackendBaseUrl()}/v1/character/jobs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt,
-        style: body.style || 'realista',
-        targetEngine: body.targetEngine || 'generic',
-        includeAnimations: body.includeAnimations !== false,
-        includeBlendshapes: body.includeBlendshapes !== false,
-        references: Array.isArray(body.references) ? body.references.slice(0, 6) : [],
-      }),
-      cache: 'no-store',
+    const job = await createCharacterJob({
+      prompt,
+      style: body.style || 'realista',
+      targetEngine: body.targetEngine || 'generic',
+      includeAnimations: body.includeAnimations !== false,
+      includeBlendshapes: body.includeBlendshapes !== false,
+      references: Array.isArray(body.references) ? body.references.slice(0, 6) : [],
     });
 
-    const data = await response.json().catch(() => ({} as Record<string, unknown>));
-    if (!response.ok) {
-      return NextResponse.json(
-        { success: false, error: normalizeDetail(data, 'No se pudo iniciar el job de personaje.') },
-        { status: response.status }
-      );
-    }
+    await upsertCharacterGenerationJobRecord({
+      jobId: job.jobId,
+      userId: user.id,
+      projectKey: normalizeProjectKey(request.headers.get('x-rey30-project')),
+      prompt,
+      style: body.style || 'realista',
+      targetEngine: body.targetEngine || 'generic',
+      includeAnimations: body.includeAnimations !== false,
+      includeBlendshapes: body.includeBlendshapes !== false,
+      references: Array.isArray(body.references) ? body.references.slice(0, 6) : [],
+      status: job.status,
+      progress: job.status === 'queued' ? 0 : 5,
+      stage: job.status,
+    });
 
     return NextResponse.json({
       success: true,
-      jobId: data.jobId,
-      status: data.status || 'queued',
+      taskId: job.jobId,
+      jobId: job.jobId,
+      status: job.status,
     });
   } catch (error) {
     if (isAuthError(error)) return authErrorToResponse(error);
     console.error('[character/jobs][POST] failed:', error);
-    return NextResponse.json({ success: false, error: 'Error interno al iniciar job.' }, { status: 500 });
+    return sanitizeServiceError(error, 'No se pudo iniciar la creación del personaje.');
   }
 }
 
 export async function GET(request: NextRequest) {
   try {
     await requireSession(request, 'VIEWER');
-    if (!REMOTE_BACKEND_URL) {
-      return NextResponse.json(
-        { success: false, error: 'Character backend no configurado (REY30_CHARACTER_BACKEND_URL).' },
-        { status: 501 }
-      );
-    }
 
     const { searchParams } = new URL(request.url);
     const jobId = (searchParams.get('jobId') || '').trim();
@@ -93,44 +95,64 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'jobId es requerido.' }, { status: 400 });
     }
 
-    const response = await fetch(`${getBackendBaseUrl()}/v1/character/jobs/${encodeURIComponent(jobId)}`, {
-      method: 'GET',
-      cache: 'no-store',
-    });
-
-    const data = await response.json().catch(() => ({} as Record<string, unknown>));
-    if (!response.ok) {
-      return NextResponse.json(
-        { success: false, error: normalizeDetail(data, 'No se pudo consultar el estado del job.') },
-        { status: response.status }
-      );
+    const stored = await getCharacterGenerationJobRecord(jobId);
+    if (!isCharacterBackendConfigured()) {
+      if (stored) {
+        return NextResponse.json({
+          success: true,
+          status: normalizeCharacterTaskStatus(stored.status),
+          progress: stored.progress,
+          stage: stored.stage,
+          error: stored.status === 'failed' ? 'No se pudo completar el personaje.' : null,
+          asset: stored.asset,
+        });
+      }
+      return serviceUnavailableResponse();
     }
 
+    const status = await getCharacterJobStatus(jobId);
+    await patchCharacterGenerationJobRecord(jobId, (current) => ({
+      ...current,
+      status: status.status,
+      progress: status.progress,
+      stage: status.stage,
+      error: status.error,
+    }));
+
+    const refreshed = await getCharacterGenerationJobRecord(jobId);
     return NextResponse.json({
       success: true,
-      jobId,
-      status: data.status || 'queued',
-      progress: typeof data.progress === 'number' ? data.progress : 0,
-      stage: typeof data.stage === 'string' ? data.stage : 'queued',
-      error: typeof data.error === 'string' ? data.error : null,
-      quality: typeof data.quality === 'object' && data.quality !== null ? data.quality : null,
-      resultPath: typeof data.resultPath === 'string' ? data.resultPath : null,
+      status: normalizeCharacterTaskStatus(status.status),
+      progress: status.progress,
+      stage: status.stage,
+      error: status.status === 'failed' ? 'No se pudo completar el personaje.' : null,
+      asset: refreshed?.asset ?? stored?.asset ?? null,
     });
   } catch (error) {
     if (isAuthError(error)) return authErrorToResponse(error);
+    const { searchParams } = new URL(request.url);
+    const jobId = (searchParams.get('jobId') || '').trim();
+    const stored = jobId ? await getCharacterGenerationJobRecord(jobId).catch(() => null) : null;
+    if (stored) {
+      return NextResponse.json({
+        success: true,
+        status: normalizeCharacterTaskStatus(stored.status),
+        progress: stored.progress,
+        stage: stored.stage,
+        error: stored.status === 'failed' ? 'No se pudo completar el personaje.' : null,
+        asset: stored.asset,
+      });
+    }
     console.error('[character/jobs][GET] failed:', error);
-    return NextResponse.json({ success: false, error: 'Error interno al consultar job.' }, { status: 500 });
+    return sanitizeServiceError(error, 'No se pudo consultar el estado del personaje.');
   }
 }
 
 export async function DELETE(request: NextRequest) {
   try {
     await requireSession(request, 'EDITOR');
-    if (!REMOTE_BACKEND_URL) {
-      return NextResponse.json(
-        { success: false, error: 'Character backend no configurado (REY30_CHARACTER_BACKEND_URL).' },
-        { status: 501 }
-      );
+    if (!isCharacterBackendConfigured()) {
+      return serviceUnavailableResponse();
     }
 
     const { searchParams } = new URL(request.url);
@@ -139,29 +161,23 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'jobId es requerido.' }, { status: 400 });
     }
 
-    const response = await fetch(`${getBackendBaseUrl()}/v1/character/jobs/${encodeURIComponent(jobId)}`, {
-      method: 'DELETE',
-      cache: 'no-store',
-    });
-
-    const data = await response.json().catch(() => ({} as Record<string, unknown>));
-    if (!response.ok) {
-      return NextResponse.json(
-        { success: false, error: normalizeDetail(data, 'No se pudo cancelar el job de personaje.') },
-        { status: response.status }
-      );
-    }
-
+    const status = await cancelCharacterJob(jobId);
+    await patchCharacterGenerationJobRecord(jobId, (current) => ({
+      ...current,
+      status: status.status,
+      progress: status.progress,
+      stage: status.stage,
+      error: null,
+    }));
     return NextResponse.json({
       success: true,
-      jobId,
-      status: typeof data.status === 'string' ? data.status : 'canceled',
-      progress: typeof data.progress === 'number' ? data.progress : 100,
-      stage: typeof data.stage === 'string' ? data.stage : 'canceled',
+      status: status.status,
+      progress: status.progress,
+      stage: status.stage,
     });
   } catch (error) {
     if (isAuthError(error)) return authErrorToResponse(error);
     console.error('[character/jobs][DELETE] failed:', error);
-    return NextResponse.json({ success: false, error: 'Error interno al cancelar job.' }, { status: 500 });
+    return sanitizeServiceError(error, 'No se pudo cancelar la creación del personaje.');
   }
 }

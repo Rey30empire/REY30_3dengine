@@ -113,4 +113,106 @@ describe('production preflight env evaluation', () => {
     const encryptionCheck = result.checks.find((check) => check.id === 'encryption-secret');
     expect(encryptionCheck?.status).toBe('passed');
   });
+
+  it('fails target-real preflight when using local target URL or filesystem storage', () => {
+    const result = evaluateProductionEnv(
+      {
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://postgres:postgres@127.0.0.1:5432/rey30?schema=public',
+        REY30_ENCRYPTION_KEY: 'super-secret',
+        REY30_REGISTRATION_MODE: 'invite_only',
+        REY30_REGISTRATION_INVITE_TOKEN: 'invite-token',
+        REY30_BOOTSTRAP_OWNER_TOKEN: 'owner-token',
+        REY30_ALLOWED_ORIGINS: 'http://127.0.0.1:3000',
+        REY30_REMOTE_FETCH_ALLOWLIST_ASSETS: 'cdn.example.com',
+        REY30_UPSTASH_REDIS_REST_URL: 'https://example.upstash.io',
+        REY30_UPSTASH_REDIS_REST_TOKEN: 'token',
+        SMOKE_USER_EMAIL: 'smoke@example.com',
+        SMOKE_USER_PASSWORD: 'smoke-password',
+      },
+      {
+        baseUrl: 'http://127.0.0.1:3000',
+        deploymentProfile: 'target-real',
+        explicitEnvKeys: ['SMOKE_USER_EMAIL', 'SMOKE_USER_PASSWORD'],
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.checks.find((check) => check.id === 'target-base-url')?.status).toBe('failed');
+    expect(result.checks.find((check) => check.id === 'script-storage')?.status).toBe('failed');
+    expect(result.checks.find((check) => check.id === 'package-storage')?.status).toBe('failed');
+  });
+
+  it('passes target-real preflight when target URL, shared storage and explicit smoke credentials are present', () => {
+    const result = evaluateProductionEnv(
+      {
+        NODE_ENV: 'production',
+        DATABASE_URL:
+          'postgresql://netlify:secret@ep-example-pooler.us-east-1.aws.neon.tech/rey30',
+        REY30_ENCRYPTION_KEY: 'super-secret',
+        REY30_REGISTRATION_MODE: 'invite_only',
+        REY30_REGISTRATION_INVITE_TOKEN: 'invite-token',
+        REY30_BOOTSTRAP_OWNER_TOKEN: 'owner-token',
+        REY30_ALLOWED_ORIGINS: 'https://prod.example.com',
+        REY30_REMOTE_FETCH_ALLOWLIST_ASSETS: 'cdn.example.com',
+        REY30_UPSTASH_REDIS_REST_URL: 'https://example.upstash.io',
+        REY30_UPSTASH_REDIS_REST_TOKEN: 'token',
+        REY30_SCRIPT_STORAGE_BACKEND: 'netlify-blobs',
+        REY30_GALLERY_STORAGE_BACKEND: 'netlify-blobs',
+        REY30_PACKAGE_STORAGE_BACKEND: 'netlify-blobs',
+        REY30_ASSET_STORAGE_BACKEND: 'netlify-blobs',
+        REY30_MODULAR_CHARACTER_STORAGE_BACKEND: 'netlify-blobs',
+        SMOKE_USER_EMAIL: 'smoke@example.com',
+        SMOKE_USER_PASSWORD: 'smoke-password',
+      },
+      {
+        baseUrl: 'https://prod.example.com',
+        deploymentProfile: 'target-real',
+        explicitEnvKeys: ['SMOKE_USER_EMAIL', 'SMOKE_USER_PASSWORD'],
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.find((check) => check.id === 'target-base-url')?.status).toBe('passed');
+    expect(result.checks.find((check) => check.id === 'smoke-credentials-explicit')?.status).toBe(
+      'passed'
+    );
+    expect(result.checks.find((check) => check.id === 'asset-storage')?.status).toBe('passed');
+  });
+
+  it('fails target-real preflight when a non-local target URL is not HTTPS', () => {
+    const result = evaluateProductionEnv(
+      {
+        NODE_ENV: 'production',
+        DATABASE_URL:
+          'postgresql://netlify:secret@ep-example-pooler.us-east-1.aws.neon.tech/rey30',
+        REY30_ENCRYPTION_KEY: 'super-secret',
+        REY30_REGISTRATION_MODE: 'invite_only',
+        REY30_REGISTRATION_INVITE_TOKEN: 'invite-token',
+        REY30_BOOTSTRAP_OWNER_TOKEN: 'owner-token',
+        REY30_ALLOWED_ORIGINS: 'http://prod.example.com',
+        REY30_REMOTE_FETCH_ALLOWLIST_ASSETS: 'cdn.example.com',
+        REY30_UPSTASH_REDIS_REST_URL: 'https://example.upstash.io',
+        REY30_UPSTASH_REDIS_REST_TOKEN: 'token',
+        REY30_SCRIPT_STORAGE_BACKEND: 'netlify-blobs',
+        REY30_GALLERY_STORAGE_BACKEND: 'netlify-blobs',
+        REY30_PACKAGE_STORAGE_BACKEND: 'netlify-blobs',
+        REY30_ASSET_STORAGE_BACKEND: 'netlify-blobs',
+        REY30_MODULAR_CHARACTER_STORAGE_BACKEND: 'netlify-blobs',
+        SMOKE_USER_EMAIL: 'smoke@example.com',
+        SMOKE_USER_PASSWORD: 'smoke-password',
+      },
+      {
+        baseUrl: 'http://prod.example.com',
+        deploymentProfile: 'target-real',
+        explicitEnvKeys: ['SMOKE_USER_EMAIL', 'SMOKE_USER_PASSWORD'],
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.checks.find((check) => check.id === 'target-base-url')?.status).toBe('failed');
+    expect(result.checks.find((check) => check.id === 'target-base-url')?.detail).toContain(
+      'HTTPS'
+    );
+  });
 });

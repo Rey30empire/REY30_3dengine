@@ -5,6 +5,7 @@ import path from 'path';
 import { UserRole } from '@prisma/client';
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
+import { getAssetDbPath } from '@/engine/assets/pipeline';
 import { POST as compositorPersistPost } from '@/app/api/compositor/persist/route';
 import { createSessionForUser, SESSION_COOKIE_NAME } from '@/lib/security/auth';
 
@@ -150,9 +151,7 @@ describe('Compositor persist API', () => {
       await expect(access(jobFile)).resolves.toBeUndefined();
       await expect(readFile(jobFile, 'utf-8')).resolves.toContain('"sceneName":"Arena"');
 
-      const dbPayload = JSON.parse(
-        await readFile(path.join(assetRoot, '..', 'assets-db.json'), 'utf-8')
-      ) as {
+      const dbPayload = JSON.parse(await readFile(getAssetDbPath(), 'utf-8')) as {
         assets: Array<{ path: string; metadata?: Record<string, unknown> }>;
       };
       expect(dbPayload.assets).toEqual(

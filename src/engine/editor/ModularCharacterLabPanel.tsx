@@ -101,7 +101,7 @@ function viewerLabel(state: string) {
     case 'fragmenting':
       return 'Fragmentando y exportando modulos GLB';
     case 'saving':
-      return 'Guardando en backend modular';
+      return 'Guardando paquete modular';
     case 'ready':
       return 'Listo para descargar';
     case 'error':

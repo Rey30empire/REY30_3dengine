@@ -15,6 +15,22 @@ describe('Ops observability APIs', () => {
     engineTelemetry.reset();
     engineTelemetry.recordComposeDuration(35, { mode: 'MODE_HYBRID' });
     engineTelemetry.recordPromptToSceneDuration(4200, { mode: 'MODE_AI_FIRST' });
+    engineTelemetry.recordPerformanceSample({
+      fps: 57,
+      frameTimeMs: 17.8,
+      cpuTimeMs: 9.1,
+      gpuTimeMs: 0,
+      drawCalls: 1180,
+      triangles: 13200,
+      vertices: 39600,
+      memoryUsedMb: 448,
+      memoryAllocatedMb: 640,
+      textures: 18,
+      meshes: 14,
+      audioBuffers: 2,
+      runtimeState: 'PLAYING',
+      source: 'ops_test',
+    });
 
     const headers = { 'x-rey30-ops-token': 'test-ops-token' };
 
@@ -26,6 +42,9 @@ describe('Ops observability APIs', () => {
       const sloPayload = await sloResponse.json();
       expect(sloPayload.ok).toBe(true);
       expect(Array.isArray(sloPayload.slo.indicators)).toBe(true);
+      expect(
+        sloPayload.slo.indicators.some((indicator: { key: string }) => indicator.key === 'editor_frame_time')
+      ).toBe(true);
 
       const alertsResponse = await alertsGet(
         new NextRequest('http://localhost/api/ops/alerts', { headers })
@@ -41,7 +60,11 @@ describe('Ops observability APIs', () => {
       expect(metricsResponse.status).toBe(200);
       const metricsText = await metricsResponse.text();
       expect(metricsText).toContain('rey30_compose_duration_ms_avg');
+      expect(metricsText).toContain('rey30_editor_fps_avg');
       expect(metricsText).toContain('rey30_slo_indicator_status');
+      expect(metricsText).toContain(
+        'rey30_runtime_forensics_webhook_delivery_failure_rate'
+      );
     } finally {
       engineTelemetry.reset();
     }

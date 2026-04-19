@@ -6,7 +6,9 @@ type PersistTexturePaintParams = {
   textureUrl: string;
   assetName: string;
   entityName: string;
+  entityId?: string;
   slot: string;
+  resolution?: number;
   projectName?: string;
 };
 
@@ -47,7 +49,13 @@ export async function persistTexturePaintAsset(params: PersistTexturePaintParams
   );
   formData.append('name', assetName);
   formData.append('entityName', params.entityName);
+  if (params.entityId) {
+    formData.append('entityId', params.entityId);
+  }
   formData.append('slot', params.slot);
+  if (typeof params.resolution === 'number' && Number.isFinite(params.resolution)) {
+    formData.append('resolution', String(Math.round(params.resolution)));
+  }
 
   const saveResponse = await fetch('/api/texture-paint/persist', {
     method: 'POST',

@@ -20,3 +20,5 @@ export {
   type UIEventHandler,
   type UIStyle,
 } from './UIRuntime';
+
+export { UIRuntimeBridge, uiRuntimeBridge, UI_RUNTIME_CANVAS_ID } from './uiRuntimeBridge';

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { logSecurityEvent, requireSession } from '@/lib/security/auth';
+import {
+  isLocalProviderUsable,
+  isLocalProviderConfigError,
+  resolveEnabledLocalProviderBaseUrl,
+} from '@/lib/security/local-provider-policy';
 import { getUserScopedConfig, touchProviderUsage } from '@/lib/security/user-api-config';
 import {
   assertUsageAllowed,
@@ -10,15 +15,55 @@ import { normalizeProjectKey, recordProjectUsage } from '@/lib/security/usage-fi
 import {
   createCorrelationId,
   logErrorWithCorrelation,
-  publicErrorResponse,
 } from '@/lib/security/public-error';
 import { fetchRemoteJson, RemoteFetchError } from '@/lib/security/remote-fetch';
+import {
+  createAssistantIntentReceipt,
+  type AssistantReceiptProvider,
+} from '@/lib/server/assistant-intent-receipts';
+import { tryHandleAssistantSceneAction } from '@/lib/server/assistant-scene-actions';
 
 type AIChatBody = {
   prompt?: string;
   messages?: Array<{ role: string; content: string }>;
   model?: string;
 };
+
+const CHAT_UNAVAILABLE_MESSAGE = 'El chat del asistente no está disponible para esta sesión.';
+const CHAT_AUTH_REQUIRED_MESSAGE = 'Debes iniciar sesión para usar el asistente.';
+
+function assistantErrorResponse(params: {
+  status: number;
+  error: string;
+  code: string;
+  correlationId: string;
+  projectKey: string;
+  provider: AssistantReceiptProvider;
+  outcome:
+    | 'provider_unavailable'
+    | 'auth_required'
+    | 'usage_limited'
+    | 'provider_error'
+    | 'internal_error';
+}) {
+  return NextResponse.json(
+    {
+      error: params.error,
+      code: params.code,
+      correlationId: params.correlationId,
+      receipt: createAssistantIntentReceipt({
+        correlationId: params.correlationId,
+        projectKey: params.projectKey,
+        source: 'provider-chat',
+        provider: params.provider,
+        outcome: params.outcome,
+        handledSceneAction: false,
+        sceneUpdated: false,
+      }),
+    },
+    { status: params.status }
+  );
+}
 
 function normalizeMessages(body: AIChatBody): Array<{ role: string; content: string }> {
   if (Array.isArray(body.messages) && body.messages.length > 0) {
@@ -178,20 +223,53 @@ async function runLocalChat(params: {
 
 export async function POST(request: NextRequest) {
   const correlationId = createCorrelationId(request);
+  const projectKey =
+    normalizeProjectKey(request.headers.get('x-rey30-project')) || 'untitled_project';
+  let attemptedProvider: AssistantReceiptProvider = 'none';
   try {
     const user = await requireSession(request, 'VIEWER');
     const body = await request.json() as AIChatBody;
     const messages = normalizeMessages(body);
-    const projectKey = normalizeProjectKey(request.headers.get('x-rey30-project'));
+    const assistantAction = await tryHandleAssistantSceneAction({
+      command: body.prompt || messages[messages.length - 1]?.content || '',
+      userId: user.id,
+      userRole: user.role,
+      preferredSessionId: request.headers.get('x-rey30-editor-session'),
+      projectKey,
+    });
+
+    if (assistantAction.handled) {
+      return NextResponse.json({
+        text: assistantAction.text || '',
+        handledSceneAction: true,
+        sceneUpdated: assistantAction.sceneUpdated,
+        receipt: createAssistantIntentReceipt({
+          correlationId,
+          projectKey,
+          source: 'scene-action',
+          provider: 'none',
+          outcome: 'handled_scene_action',
+          handledSceneAction: true,
+          sceneUpdated: assistantAction.sceneUpdated,
+        }),
+      });
+    }
+
     const scoped = await getUserScopedConfig(user.id);
 
     if (scoped.apiConfig.routing.chat === 'openai') {
+      attemptedProvider = 'openai';
       const openai = scoped.apiConfig.openai;
       if (!openai.enabled || !openai.apiKey) {
-        return NextResponse.json(
-          { error: 'OpenAI no configurado para tu usuario.' },
-          { status: 401 }
-        );
+        return assistantErrorResponse({
+          status: 409,
+          error: CHAT_UNAVAILABLE_MESSAGE,
+          code: 'AI_CHAT_UNAVAILABLE',
+          correlationId,
+          projectKey,
+          provider: attemptedProvider,
+          outcome: 'provider_unavailable',
+        });
       }
       await assertUsageAllowed({
         userId: user.id,
@@ -216,16 +294,36 @@ export async function POST(request: NextRequest) {
           projectKey,
         }),
       ]);
-      return NextResponse.json({ text, provider: 'openai' });
+      return NextResponse.json({
+        text,
+        handledSceneAction: false,
+        sceneUpdated: false,
+        receipt: createAssistantIntentReceipt({
+          correlationId,
+          projectKey,
+          source: 'provider-chat',
+          provider: attemptedProvider,
+          outcome: 'provider_response',
+          handledSceneAction: false,
+          sceneUpdated: false,
+          model: body.model || openai.textModel || 'gpt-4.1-mini',
+        }),
+      });
     }
 
     const localProvider = pickLocalProvider(scoped);
+    attemptedProvider = localProvider;
     const providerConfig = scoped.localConfig[localProvider];
     if (!providerConfig.enabled) {
-      return NextResponse.json(
-        { error: 'Ningún proveedor local habilitado.' },
-        { status: 401 }
-      );
+      return assistantErrorResponse({
+        status: 409,
+        error: CHAT_UNAVAILABLE_MESSAGE,
+        code: 'AI_CHAT_UNAVAILABLE',
+        correlationId,
+        projectKey,
+        provider: attemptedProvider,
+        outcome: 'provider_unavailable',
+      });
     }
 
     await assertUsageAllowed({
@@ -236,7 +334,7 @@ export async function POST(request: NextRequest) {
 
     const text = await runLocalChat({
       provider: localProvider,
-      baseUrl: providerConfig.baseUrl,
+      baseUrl: resolveEnabledLocalProviderBaseUrl(localProvider, providerConfig.baseUrl),
       apiKey: providerConfig.apiKey,
       model: 'model' in providerConfig ? providerConfig.model : undefined,
       messages,
@@ -251,7 +349,21 @@ export async function POST(request: NextRequest) {
         projectKey,
       }),
     ]);
-    return NextResponse.json({ text, provider: localProvider });
+    return NextResponse.json({
+      text,
+      handledSceneAction: false,
+      sceneUpdated: false,
+      receipt: createAssistantIntentReceipt({
+        correlationId,
+        projectKey,
+        source: 'provider-chat',
+        provider: attemptedProvider,
+        outcome: 'provider_response',
+        handledSceneAction: false,
+        sceneUpdated: false,
+        model: 'model' in providerConfig ? providerConfig.model : undefined,
+      }),
+    });
   } catch (error) {
     if (isUsageLimitError(error)) {
       await logSecurityEvent({
@@ -260,15 +372,26 @@ export async function POST(request: NextRequest) {
         status: 'denied',
         metadata: { reason: 'usage_limit_exceeded', correlationId },
       });
-      return publicErrorResponse({
+      return assistantErrorResponse({
         status: 429,
         error: 'Límite de uso/costo excedido para este período. Ajusta tu presupuesto en Usuario -> Uso.',
         code: 'USAGE_LIMIT_EXCEEDED',
         correlationId,
+        projectKey,
+        provider: attemptedProvider,
+        outcome: 'usage_limited',
       });
     }
     if (String(error).includes('UNAUTHORIZED')) {
-      return NextResponse.json({ error: 'Debes iniciar sesión para usar AI Chat.' }, { status: 401 });
+      return assistantErrorResponse({
+        status: 401,
+        error: CHAT_AUTH_REQUIRED_MESSAGE,
+        code: 'AI_CHAT_AUTH_REQUIRED',
+        correlationId,
+        projectKey,
+        provider: attemptedProvider,
+        outcome: 'auth_required',
+      });
     }
     if (error instanceof RemoteFetchError) {
       await logSecurityEvent({
@@ -277,11 +400,31 @@ export async function POST(request: NextRequest) {
         status: 'error',
         metadata: { reason: error.code, correlationId },
       });
-      return publicErrorResponse({
+      return assistantErrorResponse({
         status: error.status,
         error: 'No se pudo conectar con el proveedor configurado.',
         code: error.code,
         correlationId,
+        projectKey,
+        provider: attemptedProvider,
+        outcome: 'provider_error',
+      });
+    }
+    if (isLocalProviderConfigError(error)) {
+      await logSecurityEvent({
+        request,
+        action: 'provider.ai_chat.use',
+        status: 'denied',
+        metadata: { reason: error.code, correlationId },
+      });
+      return assistantErrorResponse({
+        status: 409,
+        error: CHAT_UNAVAILABLE_MESSAGE,
+        code: error.code,
+        correlationId,
+        projectKey,
+        provider: attemptedProvider,
+        outcome: 'provider_unavailable',
       });
     }
     await logSecurityEvent({
@@ -291,11 +434,14 @@ export async function POST(request: NextRequest) {
       metadata: { error: String(error), correlationId },
     });
     logErrorWithCorrelation('api.ai-chat', correlationId, error);
-    return publicErrorResponse({
+    return assistantErrorResponse({
       status: 500,
       error: 'No se pudo procesar el chat.',
       code: 'AI_CHAT_INTERNAL_ERROR',
       correlationId,
+      projectKey,
+      provider: attemptedProvider,
+      outcome: 'internal_error',
     });
   }
 }
@@ -304,17 +450,24 @@ export async function GET(request: NextRequest) {
   try {
     const user = await requireSession(request, 'VIEWER');
     const scoped = await getUserScopedConfig(user.id);
+    const usingLocalChat =
+      scoped.apiConfig.routing.chat === 'local' &&
+      (isLocalProviderUsable('ollama', scoped.localConfig.ollama) ||
+        isLocalProviderUsable('vllm', scoped.localConfig.vllm) ||
+        isLocalProviderUsable('llamacpp', scoped.localConfig.llamacpp));
+    const usingRemoteChat =
+      scoped.apiConfig.routing.chat !== 'local' &&
+      !!scoped.apiConfig.openai.enabled &&
+      !!scoped.apiConfig.openai.apiKey &&
+      !!scoped.apiConfig.openai.capabilities.chat;
     return NextResponse.json({
       status: 'ok',
-      configured: true,
-      routing: scoped.apiConfig.routing.chat,
-      policy: 'BYOK per-user',
+      available: usingLocalChat || usingRemoteChat,
     });
   } catch {
     return NextResponse.json({
       status: 'ok',
-      configured: false,
-      error: 'No autenticado',
+      available: false,
     });
   }
 }

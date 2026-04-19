@@ -4,6 +4,10 @@
 // ============================================
 
 import * as THREE from 'three';
+import {
+  PARTICLE_PRESET_REGISTRY,
+  type ParticlePresetId,
+} from './particlePresetRegistry';
 
 export interface ParticleEmitterConfig {
   // Emission
@@ -387,182 +391,14 @@ export class ParticleEmitter {
   }
 }
 
-// Preset particle effects
-export const PARTICLE_PRESETS = {
-  fire: {
-    rate: 50,
-    maxParticles: 500,
-    lifetimeMin: 0.5,
-    lifetimeMax: 1.5,
-    shape: 'circle' as const,
-    radius: 0.3,
-    speedMin: 2,
-    speedMax: 4,
-    direction: 'up' as const,
-    startSizeMin: 0.3,
-    startSizeMax: 0.6,
-    endSizeMin: 0,
-    endSizeMax: 0.1,
-    startColor: new THREE.Color(1, 0.8, 0.2),
-    endColor: new THREE.Color(1, 0.1, 0),
-    gravity: 0,
-    blendMode: 'additive' as const,
-  },
-  
-  smoke: {
-    rate: 20,
-    maxParticles: 200,
-    lifetimeMin: 2,
-    lifetimeMax: 4,
-    shape: 'circle' as const,
-    radius: 0.2,
-    speedMin: 0.5,
-    speedMax: 1.5,
-    direction: 'up' as const,
-    startSizeMin: 0.2,
-    startSizeMax: 0.4,
-    endSizeMin: 1,
-    endSizeMax: 2,
-    startColor: new THREE.Color(0.3, 0.3, 0.3),
-    endColor: new THREE.Color(0.1, 0.1, 0.1),
-    startAlpha: 0.8,
-    endAlpha: 0,
-    gravity: 0.5,
-    blendMode: 'alpha' as const,
-  },
-  
-  sparkles: {
-    rate: 100,
-    maxParticles: 300,
-    lifetimeMin: 0.3,
-    lifetimeMax: 0.8,
-    shape: 'sphere' as const,
-    radius: 0.5,
-    speedMin: 1,
-    speedMax: 3,
-    direction: 'outward' as const,
-    startSizeMin: 0.05,
-    startSizeMax: 0.15,
-    endSizeMin: 0,
-    endSizeMax: 0,
-    startColor: new THREE.Color(0.5, 0.8, 1),
-    endColor: new THREE.Color(1, 1, 1),
-    gravity: 0,
-    blendMode: 'additive' as const,
-  },
-  
-  explosion: {
-    burstCount: 100,
-    rate: 0,
-    maxParticles: 200,
-    lifetimeMin: 0.5,
-    lifetimeMax: 1.5,
-    shape: 'point' as const,
-    radius: 0,
-    speedMin: 5,
-    speedMax: 15,
-    direction: 'outward' as const,
-    startSizeMin: 0.2,
-    startSizeMax: 0.5,
-    endSizeMin: 0,
-    endSizeMax: 0,
-    startColor: new THREE.Color(1, 0.5, 0),
-    endColor: new THREE.Color(1, 0.1, 0),
-    gravity: -5,
-    blendMode: 'additive' as const,
-    autoDestroy: true,
-  },
-  
-  magic: {
-    rate: 30,
-    maxParticles: 150,
-    lifetimeMin: 1,
-    lifetimeMax: 2,
-    shape: 'sphere' as const,
-    radius: 0.3,
-    speedMin: 0.5,
-    speedMax: 2,
-    direction: 'random' as const,
-    startSizeMin: 0.1,
-    startSizeMax: 0.3,
-    endSizeMin: 0,
-    endSizeMax: 0,
-    startColor: new THREE.Color(0.5, 0, 1),
-    endColor: new THREE.Color(1, 0, 0.5),
-    gravity: 0,
-    blendMode: 'additive' as const,
-    noiseStrength: 0.5,
-  },
-  
-  snow: {
-    rate: 50,
-    maxParticles: 1000,
-    lifetimeMin: 5,
-    lifetimeMax: 10,
-    shape: 'box' as const,
-    radius: 10,
-    speedMin: 0.5,
-    speedMax: 1,
-    direction: 'down' as const,
-    startSizeMin: 0.05,
-    startSizeMax: 0.15,
-    endSizeMin: 0.05,
-    endSizeMax: 0.15,
-    startColor: new THREE.Color(1, 1, 1),
-    endColor: new THREE.Color(0.9, 0.9, 1),
-    startAlpha: 0.8,
-    endAlpha: 0.3,
-    gravity: -2,
-    blendMode: 'alpha' as const,
-  },
-  
-  blood: {
-    burstCount: 20,
-    rate: 0,
-    maxParticles: 50,
-    lifetimeMin: 0.5,
-    lifetimeMax: 1,
-    shape: 'point' as const,
-    radius: 0,
-    speedMin: 3,
-    speedMax: 8,
-    direction: 'outward' as const,
-    startSizeMin: 0.1,
-    startSizeMax: 0.3,
-    endSizeMin: 0.05,
-    endSizeMax: 0.1,
-    startColor: new THREE.Color(0.8, 0, 0),
-    endColor: new THREE.Color(0.4, 0, 0),
-    gravity: -15,
-    blendMode: 'alpha' as const,
-  },
-  
-  dust: {
-    rate: 10,
-    maxParticles: 100,
-    lifetimeMin: 2,
-    lifetimeMax: 4,
-    shape: 'box' as const,
-    radius: 2,
-    speedMin: 0.1,
-    speedMax: 0.5,
-    direction: 'random' as const,
-    startSizeMin: 0.05,
-    startSizeMax: 0.2,
-    endSizeMin: 0.05,
-    endSizeMax: 0.2,
-    startColor: new THREE.Color(0.6, 0.5, 0.4),
-    endColor: new THREE.Color(0.4, 0.3, 0.2),
-    startAlpha: 0.5,
-    endAlpha: 0,
-    gravity: 0,
-    blendMode: 'alpha' as const,
-  },
-};
+export const PARTICLE_PRESETS: Record<ParticlePresetId, Partial<ParticleEmitterConfig>> =
+  Object.fromEntries(
+    PARTICLE_PRESET_REGISTRY.map((entry) => [entry.id, entry.params])
+  ) as Record<ParticlePresetId, Partial<ParticleEmitterConfig>>;
 
 // Helper to create preset emitter
 export function createParticlePreset(
-  preset: keyof typeof PARTICLE_PRESETS,
+  preset: ParticlePresetId,
   position?: THREE.Vector3
 ): ParticleEmitter {
   const emitter = new ParticleEmitter(PARTICLE_PRESETS[preset]);

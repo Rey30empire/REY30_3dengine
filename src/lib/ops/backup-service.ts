@@ -3,14 +3,44 @@ import { existsSync } from 'fs';
 import { access, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
 import path from 'path';
 import { getReleaseInfo } from '@/lib/ops/release-info';
+import {
+  deleteStoredGalleryFile,
+  getGalleryStorageInfo,
+  listStoredGalleryFiles,
+  readStoredGalleryFile,
+  upsertStoredGalleryFile,
+} from '@/lib/server/gallery-storage';
+import {
+  deleteStoredPackage,
+  getPackageStorageInfo,
+  listStoredPackages,
+  restoreStoredPackageDocument,
+  serializeStoredPackageDocument,
+  type StoredPackageManifest,
+} from '@/lib/server/package-storage';
+import {
+  deleteStoredScript,
+  getScriptStorageInfo,
+  listStoredScripts,
+  upsertStoredScript,
+} from '@/lib/server/script-storage';
+import type { StorageAdapterInfo } from '@/lib/server/storage-adapter';
 
-type BackupTargetKey = 'database' | 'scripts' | 'gallery';
+type BackupTargetKey = 'database' | 'scripts' | 'gallery' | 'packages';
 type TargetType = 'file' | 'directory';
+type BackupSourceMode = 'filesystem' | 'storage-adapter';
 
 type BackupFileEntry = {
   relativePath: string;
   size: number;
   sha256: string;
+};
+
+type BackupTargetStorageInfo = {
+  backend?: string;
+  scope?: string;
+  root?: string;
+  storeName?: string;
 };
 
 type BackupItem = {
@@ -22,6 +52,8 @@ type BackupItem = {
   fileCount: number;
   totalBytes: number;
   files: BackupFileEntry[];
+  sourceMode?: BackupSourceMode;
+  storage?: BackupTargetStorageInfo;
 };
 
 export type BackupManifest = {
@@ -73,13 +105,33 @@ export type RestoreResult = {
   historyDir: string | null;
 };
 
-type BackupTarget = {
+type FilesystemBackupTarget = {
   key: BackupTargetKey;
   targetType: TargetType;
+  sourceMode: 'filesystem';
   sourcePath: string;
 };
 
-const BACKUP_SCHEMA_VERSION = 1;
+type StorageBackupFile = {
+  relativePath: string;
+  data: Buffer;
+  contentType?: string;
+  modifiedAt?: string;
+};
+
+type StorageBackupTarget = {
+  key: Exclude<BackupTargetKey, 'database'>;
+  targetType: 'directory';
+  sourceMode: 'storage-adapter';
+  sourcePath: string;
+  storage: BackupTargetStorageInfo;
+  listFiles: () => Promise<StorageBackupFile[]>;
+  restoreFiles: (files: StorageBackupFile[]) => Promise<void>;
+};
+
+type BackupTarget = FilesystemBackupTarget | StorageBackupTarget;
+
+const BACKUP_SCHEMA_VERSION = 2;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -119,17 +171,6 @@ function resolveBackupRoot(): string {
   );
 }
 
-function resolveScriptsRoot(): string {
-  const sourceRoot = process.env.REY30_SOURCE_PROJECT_DIR || process.cwd();
-  return path.resolve(process.env.REY30_SCRIPT_ROOT || path.join(sourceRoot, 'scripts'));
-}
-
-function resolveGalleryRoot(): string {
-  return path.resolve(
-    process.env.REY30_GALLERY_ROOT || path.join(localAppDataRoot(), 'REY30_gallery_store')
-  );
-}
-
 function parseLocalDatabaseFilePath(urlValue: string): string | null {
   if (!urlValue || !urlValue.startsWith('file:')) return null;
   const rawPath = urlValue.slice('file:'.length);
@@ -155,30 +196,19 @@ function resolveDatabasePath(): string | null {
   return fallbackCandidates.find((candidate) => existsSync(candidate)) || null;
 }
 
-function resolveTargets(): BackupTarget[] {
-  const targets: BackupTarget[] = [
-    {
-      key: 'scripts',
-      targetType: 'directory',
-      sourcePath: resolveScriptsRoot(),
-    },
-    {
-      key: 'gallery',
-      targetType: 'directory',
-      sourcePath: resolveGalleryRoot(),
-    },
-  ];
+function describeStorageSource(key: string, info: StorageAdapterInfo): string {
+  if (info.root) return info.root;
+  if (info.storeName) return `${key}://${info.storeName}`;
+  return `${key}://unconfigured`;
+}
 
-  const databasePath = resolveDatabasePath();
-  if (databasePath) {
-    targets.unshift({
-      key: 'database',
-      targetType: 'file',
-      sourcePath: databasePath,
-    });
-  }
-
-  return targets;
+function toStorageMetadata(info: StorageAdapterInfo): BackupTargetStorageInfo {
+  return {
+    backend: info.backend,
+    scope: info.scope,
+    root: info.root,
+    storeName: info.storeName,
+  };
 }
 
 async function listFilesRecursive(root: string): Promise<string[]> {
@@ -217,7 +247,10 @@ async function readManifest(backupId: string): Promise<{ backupDir: string; mani
   return { backupDir, manifest };
 }
 
-async function buildItemForTarget(target: BackupTarget, payloadRoot: string): Promise<BackupItem> {
+async function buildItemForFilesystemTarget(
+  target: FilesystemBackupTarget,
+  payloadRoot: string
+): Promise<BackupItem> {
   const exists = await pathExists(target.sourcePath);
   const payloadPath = `payload/${target.key}`;
 
@@ -231,6 +264,7 @@ async function buildItemForTarget(target: BackupTarget, payloadRoot: string): Pr
       fileCount: 0,
       totalBytes: 0,
       files: [],
+      sourceMode: target.sourceMode,
     };
   }
 
@@ -260,6 +294,7 @@ async function buildItemForTarget(target: BackupTarget, payloadRoot: string): Pr
           sha256: await hashFile(payloadFile),
         },
       ],
+      sourceMode: target.sourceMode,
     };
   }
 
@@ -289,6 +324,258 @@ async function buildItemForTarget(target: BackupTarget, payloadRoot: string): Pr
     fileCount: entries.length,
     totalBytes,
     files: entries,
+    sourceMode: target.sourceMode,
+  };
+}
+
+async function buildItemForStorageTarget(
+  target: StorageBackupTarget,
+  payloadRoot: string
+): Promise<BackupItem> {
+  const payloadPath = `payload/${target.key}`;
+  const targetPayloadRoot = path.join(payloadRoot, target.key);
+  const files = await target.listFiles();
+
+  if (files.length === 0) {
+    return {
+      key: target.key,
+      targetType: target.targetType,
+      sourcePath: target.sourcePath,
+      payloadPath,
+      exists: false,
+      fileCount: 0,
+      totalBytes: 0,
+      files: [],
+      sourceMode: target.sourceMode,
+      storage: target.storage,
+    };
+  }
+
+  const entries: BackupFileEntry[] = [];
+  let totalBytes = 0;
+
+  for (const file of files) {
+    const payloadFile = path.join(targetPayloadRoot, file.relativePath);
+    await mkdir(path.dirname(payloadFile), { recursive: true });
+    await writeFile(payloadFile, file.data);
+    const sha256 = crypto.createHash('sha256').update(file.data).digest('hex');
+    totalBytes += file.data.byteLength;
+    entries.push({
+      relativePath: `${payloadPath}/${file.relativePath}`.replace(/\\/g, '/'),
+      size: file.data.byteLength,
+      sha256,
+    });
+  }
+
+  return {
+    key: target.key,
+    targetType: target.targetType,
+    sourcePath: target.sourcePath,
+    payloadPath,
+    exists: true,
+    fileCount: entries.length,
+    totalBytes,
+    files: entries.sort((a, b) => a.relativePath.localeCompare(b.relativePath)),
+    sourceMode: target.sourceMode,
+    storage: target.storage,
+  };
+}
+
+async function buildItemForTarget(target: BackupTarget, payloadRoot: string): Promise<BackupItem> {
+  if (target.sourceMode === 'filesystem') {
+    return buildItemForFilesystemTarget(target, payloadRoot);
+  }
+
+  return buildItemForStorageTarget(target, payloadRoot);
+}
+
+async function collectPayloadFilesForRestore(item: BackupItem, backupDir: string): Promise<StorageBackupFile[]> {
+  const payloadRoot = path.join(backupDir, item.payloadPath);
+  const relativeFiles = await listFilesRecursive(payloadRoot);
+  return Promise.all(
+    relativeFiles.map(async (relativePath) => {
+      const absolutePath = path.join(payloadRoot, relativePath);
+      const data = await readFile(absolutePath);
+      return {
+        relativePath,
+        data,
+      };
+    })
+  );
+}
+
+function parsePackageBackupDocument(
+  relativePath: string,
+  raw: string
+): { relativePath: string; manifest: StoredPackageManifest } {
+  const parsed = JSON.parse(raw) as
+    | { relativePath?: unknown; manifest?: unknown }
+    | StoredPackageManifest;
+
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    'manifest' in parsed &&
+    parsed.manifest &&
+    typeof parsed.manifest === 'object'
+  ) {
+    return {
+      relativePath:
+        typeof parsed.relativePath === 'string' && parsed.relativePath.trim()
+          ? parsed.relativePath
+          : relativePath,
+      manifest: parsed.manifest as StoredPackageManifest,
+    };
+  }
+
+  return {
+    relativePath,
+    manifest: parsed as StoredPackageManifest,
+  };
+}
+
+function resolveTargets(): BackupTarget[] {
+  const scriptInfo = getScriptStorageInfo();
+  const galleryInfo = getGalleryStorageInfo();
+  const packageInfo = getPackageStorageInfo();
+  const targets: BackupTarget[] = [
+    {
+      key: 'scripts',
+      targetType: 'directory',
+      sourceMode: 'storage-adapter',
+      sourcePath: describeStorageSource('scripts', scriptInfo),
+      storage: toStorageMetadata(scriptInfo),
+      listFiles: async () => {
+        const scripts = await listStoredScripts();
+        return scripts.map((script) => ({
+          relativePath: script.relativePath,
+          data: Buffer.from(script.content, 'utf8'),
+          modifiedAt: script.modifiedAt,
+          contentType: 'text/plain; charset=utf-8',
+        }));
+      },
+      restoreFiles: async (files) => {
+        const desired = new Set(files.map((file) => file.relativePath));
+        const current = await listStoredScripts();
+        await Promise.all(
+          current
+            .filter((item) => !desired.has(item.relativePath))
+            .map((item) => deleteStoredScript(item.relativePath))
+        );
+        await Promise.all(
+          files.map((file) =>
+            upsertStoredScript(file.relativePath, file.data.toString('utf8'))
+          )
+        );
+      },
+    },
+    {
+      key: 'gallery',
+      targetType: 'directory',
+      sourceMode: 'storage-adapter',
+      sourcePath: describeStorageSource('gallery', galleryInfo),
+      storage: toStorageMetadata(galleryInfo),
+      listFiles: async () => {
+        const items = await listStoredGalleryFiles();
+        const files: Array<StorageBackupFile | null> = await Promise.all(
+          items.map(async (item) => {
+            const content = await readStoredGalleryFile(item.relativePath);
+            if (!content) return null;
+            return {
+              relativePath: item.relativePath,
+              data: content.buffer,
+              modifiedAt: content.metadata.modifiedAt,
+              contentType: content.metadata.contentType,
+            } satisfies StorageBackupFile;
+          })
+        );
+
+        return files.filter((file): file is StorageBackupFile => Boolean(file));
+      },
+      restoreFiles: async (files) => {
+        const desired = new Set(files.map((file) => file.relativePath));
+        const current = await listStoredGalleryFiles();
+        await Promise.all(
+          current
+            .filter((item) => !desired.has(item.relativePath))
+            .map((item) => deleteStoredGalleryFile(item.relativePath))
+        );
+        await Promise.all(
+          files.map((file) =>
+            upsertStoredGalleryFile({
+              relativePath: file.relativePath,
+              data: file.data,
+              contentType: file.contentType,
+            })
+          )
+        );
+      },
+    },
+    {
+      key: 'packages',
+      targetType: 'directory',
+      sourceMode: 'storage-adapter',
+      sourcePath: describeStorageSource('packages', packageInfo),
+      storage: toStorageMetadata(packageInfo),
+      listFiles: async () => {
+        const packages = await listStoredPackages();
+        return packages.map((record) => ({
+          relativePath: record.relativePath,
+          data: Buffer.from(
+            serializeStoredPackageDocument({
+              relativePath: record.relativePath,
+              manifest: record.package,
+            }),
+            'utf8'
+          ),
+          modifiedAt: record.modifiedAt,
+          contentType: 'application/json',
+        }));
+      },
+      restoreFiles: async (files) => {
+        const desired = new Set(files.map((file) => file.relativePath));
+        const current = await listStoredPackages();
+        await Promise.all(
+          current
+            .filter((item) => !desired.has(item.relativePath))
+            .map((item) => deleteStoredPackage(item.relativePath))
+        );
+        await Promise.all(
+          files.map((file) => {
+            const document = parsePackageBackupDocument(
+              file.relativePath,
+              file.data.toString('utf8')
+            );
+            return restoreStoredPackageDocument(document);
+          })
+        );
+      },
+    },
+  ];
+
+  const databasePath = resolveDatabasePath();
+  if (databasePath) {
+    targets.unshift({
+      key: 'database',
+      targetType: 'file',
+      sourceMode: 'filesystem',
+      sourcePath: databasePath,
+    });
+  }
+
+  return targets;
+}
+
+function resolveTargetForRestore(item: BackupItem): BackupTarget {
+  const currentTargets = resolveTargets();
+  const match = currentTargets.find((target) => target.key === item.key);
+  if (match) return match;
+
+  return {
+    key: item.key,
+    targetType: item.targetType,
+    sourceMode: 'filesystem',
+    sourcePath: item.sourcePath,
   };
 }
 
@@ -424,13 +711,15 @@ export async function restoreBackup(options: {
   const dryRun = options.dryRun !== false;
   const { backupId } = options;
   const { backupDir, manifest } = await readManifest(backupId);
-  const verified = options.skipVerify ? {
-    backupId,
-    ok: true,
-    checkedFiles: 0,
-    failedFiles: 0,
-    mismatches: [],
-  } : await verifyBackup(backupId);
+  const verified = options.skipVerify
+    ? {
+        backupId,
+        ok: true,
+        checkedFiles: 0,
+        failedFiles: 0,
+        mismatches: [],
+      }
+    : await verifyBackup(backupId);
 
   if (!verified.ok && !dryRun) {
     throw new Error('Backup verification failed. Restore aborted.');
@@ -462,30 +751,45 @@ export async function restoreBackup(options: {
   const historyDir = path.join(resolveBackupRoot(), '_restore_history', `${backupId}_${Date.now()}`);
   await mkdir(historyDir, { recursive: true });
 
-  for (const operation of operations) {
-    const targetExists = await pathExists(operation.to);
+  for (const item of manifest.items.filter((entry) => entry.exists)) {
+    const target = resolveTargetForRestore(item);
 
-    if (targetExists) {
-      const historyTarget = path.join(historyDir, operation.key);
-      await mkdir(path.dirname(historyTarget), { recursive: true });
-      if (operation.targetType === 'directory') {
-        await cp(operation.to, historyTarget, { recursive: true, force: true });
-      } else {
+    if (target.sourceMode === 'filesystem') {
+      const targetExists = await pathExists(target.sourcePath);
+      if (targetExists) {
+        const historyTarget = path.join(historyDir, target.key);
         await mkdir(path.dirname(historyTarget), { recursive: true });
-        await cp(operation.to, historyTarget, { force: true });
+        if (target.targetType === 'directory') {
+          await cp(target.sourcePath, historyTarget, { recursive: true, force: true });
+        } else {
+          await mkdir(path.dirname(historyTarget), { recursive: true });
+          await cp(target.sourcePath, historyTarget, { force: true });
+        }
       }
+
+      const payloadPath = path.join(backupDir, item.payloadPath);
+      if (target.targetType === 'directory') {
+        await rm(target.sourcePath, { recursive: true, force: true });
+        await mkdir(path.dirname(target.sourcePath), { recursive: true });
+        await cp(payloadPath, target.sourcePath, { recursive: true, force: true });
+      } else {
+        const fileName = path.basename(target.sourcePath);
+        const backupFilePath = path.join(payloadPath, fileName);
+        await mkdir(path.dirname(target.sourcePath), { recursive: true });
+        await cp(backupFilePath, target.sourcePath, { force: true });
+      }
+      continue;
     }
 
-    if (operation.targetType === 'directory') {
-      await rm(operation.to, { recursive: true, force: true });
-      await mkdir(path.dirname(operation.to), { recursive: true });
-      await cp(operation.from, operation.to, { recursive: true, force: true });
-    } else {
-      const fileName = path.basename(operation.to);
-      const backupFilePath = path.join(operation.from, fileName);
-      await mkdir(path.dirname(operation.to), { recursive: true });
-      await cp(backupFilePath, operation.to, { force: true });
+    const payloadFiles = await collectPayloadFilesForRestore(item, backupDir);
+    const historyTarget = path.join(historyDir, target.key);
+    await mkdir(historyTarget, { recursive: true });
+    for (const file of payloadFiles) {
+      const historyFilePath = path.join(historyTarget, file.relativePath);
+      await mkdir(path.dirname(historyFilePath), { recursive: true });
+      await writeFile(historyFilePath, file.data);
     }
+    await target.restoreFiles(payloadFiles);
   }
 
   return {

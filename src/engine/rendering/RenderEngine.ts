@@ -56,17 +56,18 @@ export class RenderEngine {
   
   // Animation
   private animationId: number | null = null;
-  private clock: THREE.Clock;
+  private lastFrameTime: number;
 
   constructor(container: HTMLElement, config: Partial<RenderConfig> = {}) {
     this.config = { ...defaultConfig, ...config };
-    this.clock = new THREE.Clock();
+    this.lastFrameTime = performance.now();
     
     // Initialize renderer
     this.renderer = new THREE.WebGLRenderer({
       antialias: this.config.antialias,
       alpha: true,
       powerPreference: 'high-performance',
+      precision: 'mediump',
     });
     
     this.configureRenderer();
@@ -117,7 +118,7 @@ export class RenderEngine {
 
   private configureRenderer(): void {
     this.renderer.shadowMap.enabled = this.config.shadows;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = this.config.toneMapping;
     this.renderer.toneMappingExposure = this.config.toneMappingExposure;
     this.renderer.outputColorSpace = this.config.outputColorSpace;
@@ -350,7 +351,9 @@ export class RenderEngine {
     const animate = () => {
       this.animationId = requestAnimationFrame(animate);
       
-      const delta = this.clock.getDelta();
+      const now = performance.now();
+      const delta = Math.min((now - this.lastFrameTime) / 1000, 0.1);
+      this.lastFrameTime = now;
       
       // Update controls
       this.controls.update();

@@ -41,11 +41,33 @@ import { cn } from '@/lib/utils';
 import { useEngineStore } from '@/store/editorStore';
 import {
   applyAutoWeightsFromRig,
+  applyAnimatorPoseLibraryEntry,
+  bakeCurrentAnimatorPoseToActiveClip,
+  bakeCurrentAnimatorPoseRangeToActiveClip,
+  clampSelectedKeyframeDelta,
+  copySelectedAnimationKeyframes,
+  copyCurrentAnimatorPose,
   createDefaultAnimatorEditorState,
   createLibraryClip,
+  deleteAnimatorPoseLibraryEntry,
+  duplicateActiveAnimationClip,
+  findSelectedKeyframeTimeBounds,
+  mirrorCurrentAnimatorPose,
   normalizeAnimatorEditorState,
+  nudgeSelectedAnimationKeyframes,
+  offsetAnimationNlaStrip,
+  pasteAnimatorPoseFromClipboard,
+  pasteAnimationKeyframesIntoActiveClip,
+  reverseActiveAnimationClip,
+  retargetActiveAnimationClipToCurrentRig,
+  scaleSelectedAnimationKeyframes,
+  saveCurrentAnimatorPoseToLibrary,
   serializeAnimatorEditorState,
+  splitActiveAnimationClipAtTime,
+  trimActiveAnimationClipToRange,
   type AnimationEditorClip as AnimationClip,
+  type AnimationKeyframeClipboard,
+  type AnimationPoseClipboard,
   type AnimationEditorKeyframe as Keyframe,
   type AnimationEditorTrack as AnimationTrack,
   type AnimatorEditorState,
@@ -53,10 +75,15 @@ import {
   type ShapeKeyTarget as BlendshapeTarget,
 } from './animationEditorState';
 import {
+  buildTimelinePreviewMap,
+  collectTimelineSelectionKeyframeIds,
+} from './animationTimelineInteractions';
+import {
   createPrimitiveMesh,
   parseEditableMesh,
   sanitizeEditableMesh,
   type EditableMesh,
+  type EditableVec3,
 } from './modelerMesh';
 
 const BASE_ANIMATION_LIBRARY = [
@@ -67,6 +94,9 @@ const BASE_ANIMATION_LIBRARY = [
   { id: 'lib_punch', name: 'Punch', tags: ['combat'], duration: 0.6 },
   { id: 'lib_look', name: 'Look Around', tags: ['idle'], duration: 1.5 },
 ];
+
+const TIMELINE_ROW_HEIGHT = 24;
+const TIMELINE_DRAG_THRESHOLD = 4;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -94,6 +124,11 @@ function buildMeshRendererDataWithMesh(
   };
 }
 
+function parseEditableNumber(value: string, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export function AnimationEditor() {
   const { entities, editor, updateEntity, setPaintWeightBone } = useEngineStore();
   const selectedEntity =
@@ -113,8 +148,31 @@ export function AnimationEditor() {
   const [selectedKeyframeState, setSelectedKeyframes] = useState<Set<string>>(new Set());
   const [zoom, setZoom] = useState(1);
   const [showCurves, setShowCurves] = useState(true);
+  const [keyframeClipboard, setKeyframeClipboard] = useState<AnimationKeyframeClipboard | null>(null);
+  const [poseClipboard, setPoseClipboard] = useState<AnimationPoseClipboard | null>(null);
+  const [posePasteBlend, setPosePasteBlend] = useState(1);
+  const [posePasteOffset, setPosePasteOffset] = useState<EditableVec3>({ x: 0, y: 0, z: 0 });
+  const [timelineSelectionState, setTimelineSelectionState] = useState<{
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+    additive: boolean;
+  } | null>(null);
+  const [keyframeDragState, setKeyframeDragState] = useState<{
+    startClientX: number;
+    startClientY: number;
+    startTime: number;
+    selectedIds: string[];
+    hasMoved: boolean;
+  } | null>(null);
+  const [keyframeDragPreview, setKeyframeDragPreview] = useState<{
+    selectedIds: string[];
+    deltaSeconds: number;
+  } | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number | null>(null);
+  const suppressTimelineClickRef = useRef(false);
   const [blendFilter, setBlendFilter] = useState<'all' | BlendshapeTarget['category']>('all');
   const [status, setStatus] = useState('');
   const currentTime = Math.max(0, Math.min(clip.duration, currentTimeState));
@@ -128,6 +186,8 @@ export function AnimationEditor() {
   const selectedKeyframes = new Set(
     Array.from(selectedKeyframeState).filter((keyframeId) => clipKeyframeIds.has(keyframeId))
   );
+  const selectedKeyframeBounds = findSelectedKeyframeTimeBounds(animatorState, selectedKeyframes);
+  const frameStep = 1 / clip.frameRate;
 
   const activeBone = animatorState.bones.find((bone) => bone.id === animatorState.activeBoneId) ?? null;
 
@@ -398,26 +458,6 @@ export function AnimationEditor() {
     }));
   };
 
-  const handleMoveKeyframe = (trackId: string, keyframeId: string, newTime: number) => {
-    if (!animatorComponent) return;
-    updateActiveClip((target) => ({
-      ...target,
-      tracks: target.tracks.map((track) => {
-        if (track.id !== trackId) return track;
-        return {
-          ...track,
-          keyframes: track.keyframes
-            .map((keyframe) =>
-              keyframe.id === keyframeId
-                ? { ...keyframe, time: Math.max(0, Math.min(target.duration, newTime)) }
-                : keyframe
-            )
-            .sort((left, right) => left.time - right.time),
-        };
-      }),
-    }));
-  };
-
   const handleSelectBone = (boneId: string) => {
     if (!animatorComponent) return;
     const nextBone = animatorState.bones.find((bone) => bone.id === boneId) ?? null;
@@ -527,13 +567,96 @@ export function AnimationEditor() {
   };
 
   const handleTimelineClick = (e: React.MouseEvent) => {
-    if (!timelineRef.current) return;
-    
+    if (suppressTimelineClickRef.current) {
+      suppressTimelineClickRef.current = false;
+      return;
+    }
+    const context = getTimelinePointerContext(e.clientX, e.clientY);
+    if (!context) return;
+    setCurrentTime(context.time);
+  };
+
+  const getTimelineMetrics = () => {
+    if (!timelineRef.current) return null;
     const rect = timelineRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const time = (x / rect.width) * clip.duration;
-    
-    setCurrentTime(Math.max(0, Math.min(clip.duration, time)));
+    const width = Math.max(rect.width, 1);
+    const height = Math.max(rect.height, clip.tracks.length * TIMELINE_ROW_HEIGHT, 1);
+    const maxRowIndex = Math.max(0, clip.tracks.length - 1);
+    return {
+      rect,
+      width,
+      height,
+      maxRowIndex,
+    };
+  };
+
+  const getTimelinePointFromRelative = (x: number, y: number) => {
+    const metrics = getTimelineMetrics();
+    if (!metrics) return null;
+    const clampedX = Math.max(0, Math.min(metrics.width, x));
+    const clampedY = Math.max(0, Math.min(metrics.height, y));
+    return {
+      x: clampedX,
+      y: clampedY,
+      time: (clampedX / metrics.width) * clip.duration,
+      rowIndex: Math.max(0, Math.min(metrics.maxRowIndex, Math.floor(clampedY / TIMELINE_ROW_HEIGHT))),
+    };
+  };
+
+  const getTimelinePointerContext = (clientX: number, clientY: number) => {
+    const metrics = getTimelineMetrics();
+    if (!metrics) return null;
+    return getTimelinePointFromRelative(clientX - metrics.rect.left, clientY - metrics.rect.top);
+  };
+
+  const handleTimelinePointerDown = (event) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-keyframe-handle="true"]')) {
+      return;
+    }
+    const context = getTimelinePointerContext(event.clientX, event.clientY);
+    if (!context) return;
+    event.preventDefault();
+    setTimelineSelectionState({
+      startX: context.x,
+      startY: context.y,
+      currentX: context.x,
+      currentY: context.y,
+      additive: event.shiftKey,
+    });
+  };
+
+  const handleKeyframePointerDown = (trackId: string, keyframeId: string, event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedTrack(trackId);
+    if (event.shiftKey) {
+      setSelectedKeyframes((prev) => {
+        const next = new Set(prev);
+        if (next.has(keyframeId)) next.delete(keyframeId);
+        else next.add(keyframeId);
+        return next;
+      });
+      return;
+    }
+
+    const selectedIds = selectedKeyframes.has(keyframeId) ? Array.from(selectedKeyframes) : [keyframeId];
+    setSelectedKeyframes(new Set(selectedIds));
+    const context = getTimelinePointerContext(event.clientX, event.clientY);
+    if (!context) return;
+    setKeyframeDragState({
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startTime: context.time,
+      selectedIds,
+      hasMoved: false,
+    });
+    setKeyframeDragPreview({
+      selectedIds,
+      deltaSeconds: 0,
+    });
   };
 
   const handleAddKeyframe = () => {
@@ -572,6 +695,284 @@ export function AnimationEditor() {
     setStatus('Keyframes eliminados.');
   };
 
+  const handleDuplicateClip = () => {
+    if (!animatorComponent) return;
+    applyAnimatorState((state) => duplicateActiveAnimationClip(state));
+    setSelectedKeyframes(new Set());
+    setStatus(`Clip duplicado desde ${clip.name}.`);
+  };
+
+  const handleReverseClip = () => {
+    if (!animatorComponent) return;
+    applyAnimatorState((state) => reverseActiveAnimationClip(state));
+    setStatus(`Clip ${clip.name} invertido.`);
+  };
+
+  const handleTrimClipToSelection = () => {
+    if (!animatorComponent || !selectedKeyframeBounds) return;
+    applyAnimatorState((state) =>
+      trimActiveAnimationClipToRange(state, selectedKeyframeBounds.start, selectedKeyframeBounds.end)
+    );
+    setSelectedKeyframes(new Set());
+    setCurrentTime(0);
+    setStatus(
+      `Clip recortado al rango ${selectedKeyframeBounds.start.toFixed(2)}s - ${selectedKeyframeBounds.end.toFixed(2)}s.`
+    );
+  };
+
+  const handleNudgeSelectedKeyframes = (deltaFrames: number) => {
+    if (!animatorComponent || selectedKeyframes.size === 0) return;
+    applyAnimatorState((state) =>
+      nudgeSelectedAnimationKeyframes(state, selectedKeyframes, deltaFrames * frameStep)
+    );
+    setStatus(`Keyframes movidos ${deltaFrames > 0 ? '+' : ''}${deltaFrames} frame(s).`);
+  };
+
+  const handleScaleSelectedKeyframes = (factor: number) => {
+    if (!animatorComponent || selectedKeyframes.size < 2) return;
+    applyAnimatorState((state) =>
+      scaleSelectedAnimationKeyframes(state, selectedKeyframes, factor, currentTime)
+    );
+    setStatus(`Bloque de keyframes escalado a ${factor.toFixed(2)}x alrededor del playhead.`);
+  };
+
+  const handleOffsetNlaStrip = (stripId: string, deltaFrames: number) => {
+    if (!animatorComponent) return;
+    applyAnimatorState((state) =>
+      offsetAnimationNlaStrip(state, stripId, deltaFrames * frameStep)
+    );
+    setStatus(`Strip NLA desplazado ${deltaFrames > 0 ? '+' : ''}${deltaFrames} frame(s).`);
+  };
+
+  const handleSavePoseToLibrary = () => {
+    if (!animatorComponent) return;
+    const nextPoseName = `Pose ${animatorState.poseLibrary.length + 1}`;
+    applyAnimatorState((state) => saveCurrentAnimatorPoseToLibrary(state, nextPoseName));
+    setStatus(`Pose guardada en libreria como ${nextPoseName}.`);
+  };
+
+  const handleApplyPoseFromLibrary = (poseId: string) => {
+    if (!animatorComponent) return;
+    const poseName = animatorState.poseLibrary.find((entry) => entry.id === poseId)?.name ?? 'Pose';
+    applyAnimatorState((state) => applyAnimatorPoseLibraryEntry(state, poseId));
+    setStatus(`Pose aplicada: ${poseName}.`);
+  };
+
+  const handleDeletePoseFromLibrary = (poseId: string) => {
+    if (!animatorComponent) return;
+    const poseName = animatorState.poseLibrary.find((entry) => entry.id === poseId)?.name ?? 'Pose';
+    applyAnimatorState((state) => deleteAnimatorPoseLibraryEntry(state, poseId));
+    setStatus(`Pose eliminada: ${poseName}.`);
+  };
+
+  const handleMirrorPose = () => {
+    if (!animatorComponent) return;
+    applyAnimatorState((state) => mirrorCurrentAnimatorPose(state));
+    setStatus('Pose espejada entre lados L/R.');
+  };
+
+  const handleCopySelectedKeyframes = () => {
+    const clipboard = copySelectedAnimationKeyframes(animatorState, selectedKeyframes);
+    if (!clipboard) {
+      setStatus('Selecciona keyframes para copiarlos.');
+      return;
+    }
+    setKeyframeClipboard(clipboard);
+    const totalKeys = clipboard.tracks.reduce((sum, track) => sum + track.keyframes.length, 0);
+    setStatus(`Copiados ${totalKeys} keyframes desde ${clipboard.sourceClipName}.`);
+  };
+
+  const handlePasteKeyframes = () => {
+    if (!animatorComponent || !keyframeClipboard) return;
+    applyAnimatorState((state) =>
+      pasteAnimationKeyframesIntoActiveClip(state, keyframeClipboard, currentTime)
+    );
+    setStatus(
+      `Pegados keyframes en ${clip.name} desde ${keyframeClipboard.sourceClipName} @ ${currentTime.toFixed(2)}s.`
+    );
+  };
+
+  const handleSplitClip = () => {
+    if (!animatorComponent) return;
+    applyAnimatorState((state) => splitActiveAnimationClipAtTime(state, currentTime));
+    setSelectedKeyframes(new Set());
+    setStatus(`Clip ${clip.name} dividido en el playhead (${currentTime.toFixed(2)}s).`);
+  };
+
+  const handleCopyPose = () => {
+    const clipboard = copyCurrentAnimatorPose(animatorState, activeBone?.name ? `Pose ${activeBone.name}` : 'Current Pose');
+    setPoseClipboard(clipboard);
+    setStatus(`Pose copiada: ${clipboard.sourceLabel}.`);
+  };
+
+  const handlePastePose = () => {
+    if (!animatorComponent || !poseClipboard) return;
+    applyAnimatorState((state) =>
+      pasteAnimatorPoseFromClipboard(state, poseClipboard, {
+        blend: posePasteBlend,
+        offset: posePasteOffset,
+      })
+    );
+    setStatus(
+      `Pose pegada desde ${poseClipboard.sourceLabel} con mix ${(posePasteBlend * 100).toFixed(0)}%.`
+    );
+  };
+
+  const handleBakePoseToKeys = () => {
+    if (!animatorComponent) return;
+    applyAnimatorState((state) => bakeCurrentAnimatorPoseToActiveClip(state, currentTime));
+    setStatus(`Pose horneada a keyframes en ${currentTime.toFixed(2)}s.`);
+  };
+
+  const handleBakePoseRange = (start: number, end: number, label: string) => {
+    if (!animatorComponent) return;
+    applyAnimatorState((state) =>
+      bakeCurrentAnimatorPoseRangeToActiveClip(state, start, end, frameStep)
+    );
+    setStatus(`Pose horneada en rango ${label}: ${start.toFixed(2)}s - ${end.toFixed(2)}s.`);
+  };
+
+  const handleResetPosePaste = () => {
+    setPosePasteBlend(1);
+    setPosePasteOffset({ x: 0, y: 0, z: 0 });
+    setStatus('Ajustes de paste pose reseteados.');
+  };
+
+  const handleRetargetClip = () => {
+    if (!animatorComponent) return;
+    const result = retargetActiveAnimationClipToCurrentRig(animatorState);
+    if (!result.retargetedClipId) {
+      setStatus('No hubo tracks compatibles para retarget en el rig actual.');
+      return;
+    }
+    applyAnimatorState(() => result.state);
+    setSelectedKeyframes(new Set());
+    setStatus(
+      `Retarget MVP listo: ${result.matchedTrackCount} tracks mapeados, ${result.skippedTrackCount} omitidos, scale ${result.positionScale.toFixed(2)}x en ${result.normalizedPositionTrackCount} track(s) de posicion.`
+    );
+  };
+
+  useEffect(() => {
+    if (!timelineSelectionState) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const context = getTimelinePointerContext(event.clientX, event.clientY);
+      if (!context) return;
+      setTimelineSelectionState((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentX: context.x,
+              currentY: context.y,
+            }
+          : prev
+      );
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const endContext =
+        getTimelinePointerContext(event.clientX, event.clientY) ??
+        getTimelinePointFromRelative(
+          timelineSelectionState.currentX,
+          timelineSelectionState.currentY
+        );
+      const startContext = getTimelinePointFromRelative(
+        timelineSelectionState.startX,
+        timelineSelectionState.startY
+      );
+      const deltaX = (endContext?.x ?? timelineSelectionState.currentX) - timelineSelectionState.startX;
+      const deltaY = (endContext?.y ?? timelineSelectionState.currentY) - timelineSelectionState.startY;
+      const moved = Math.hypot(deltaX, deltaY) >= TIMELINE_DRAG_THRESHOLD;
+
+      if (moved && startContext && endContext) {
+        const selectionIds = collectTimelineSelectionKeyframeIds(clip.tracks, {
+          startTime: startContext.time,
+          endTime: endContext.time,
+          startRow: startContext.rowIndex,
+          endRow: endContext.rowIndex,
+        });
+        setSelectedKeyframes((prev) => {
+          const next = timelineSelectionState.additive ? new Set(prev) : new Set<string>();
+          selectionIds.forEach((keyframeId) => next.add(keyframeId));
+          return next;
+        });
+        suppressTimelineClickRef.current = true;
+      }
+
+      setTimelineSelectionState(null);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [timelineSelectionState, clip.tracks, clip.duration]);
+
+  useEffect(() => {
+    if (!keyframeDragState) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const context = getTimelinePointerContext(event.clientX, event.clientY);
+      if (!context) return;
+      const selectionBounds = findSelectedKeyframeTimeBounds(
+        animatorState,
+        keyframeDragState.selectedIds
+      );
+      if (!selectionBounds) return;
+      const delta = clampSelectedKeyframeDelta(
+        selectionBounds,
+        clip.duration,
+        context.time - keyframeDragState.startTime
+      );
+      setKeyframeDragPreview({
+        selectedIds: keyframeDragState.selectedIds,
+        deltaSeconds: delta,
+      });
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const distance = Math.hypot(
+        event.clientX - keyframeDragState.startClientX,
+        event.clientY - keyframeDragState.startClientY
+      );
+      const moved = distance >= TIMELINE_DRAG_THRESHOLD;
+      const context = getTimelinePointerContext(event.clientX, event.clientY);
+      const selectionBounds = findSelectedKeyframeTimeBounds(
+        animatorState,
+        keyframeDragState.selectedIds
+      );
+
+      if (moved && context && selectionBounds) {
+        const delta = clampSelectedKeyframeDelta(
+          selectionBounds,
+          clip.duration,
+          context.time - keyframeDragState.startTime
+        );
+        if (Math.abs(delta) > 1e-6) {
+          applyAnimatorState((state) =>
+            nudgeSelectedAnimationKeyframes(state, keyframeDragState.selectedIds, delta)
+          );
+          setStatus(`Keyframes movidos ${delta >= 0 ? '+' : ''}${delta.toFixed(2)}s.`);
+          suppressTimelineClickRef.current = true;
+        }
+      }
+
+      setKeyframeDragState(null);
+      setKeyframeDragPreview(null);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [keyframeDragState, animatorState, clip.duration]);
+
   if (editor.selectedEntities.length === 0) {
     return (
       <div className="flex h-full items-center justify-center bg-slate-950 text-sm text-slate-500">
@@ -602,6 +1003,35 @@ export function AnimationEditor() {
   }
 
   const currentTrack = clip.tracks.find((track) => track.id === selectedTrack) ?? null;
+  const keyframePreviewMap = keyframeDragPreview
+    ? buildTimelinePreviewMap(
+        clip.tracks,
+        keyframeDragPreview.selectedIds,
+        keyframeDragPreview.deltaSeconds,
+        clip.duration
+      )
+    : null;
+  const timelineSelectionDistance = timelineSelectionState
+    ? Math.hypot(
+        timelineSelectionState.currentX - timelineSelectionState.startX,
+        timelineSelectionState.currentY - timelineSelectionState.startY
+      )
+    : 0;
+  const timelineSelectionBoxStyle =
+    timelineSelectionState && timelineSelectionDistance >= TIMELINE_DRAG_THRESHOLD
+      ? {
+          left: Math.min(timelineSelectionState.startX, timelineSelectionState.currentX),
+          top: Math.min(timelineSelectionState.startY, timelineSelectionState.currentY),
+          width: Math.max(
+            2,
+            Math.abs(timelineSelectionState.currentX - timelineSelectionState.startX)
+          ),
+          height: Math.max(
+            2,
+            Math.abs(timelineSelectionState.currentY - timelineSelectionState.startY)
+          ),
+        }
+      : null;
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
@@ -682,6 +1112,20 @@ export function AnimationEditor() {
           <span className="text-xs text-slate-500">
             {clip.frameRate} FPS
           </span>
+          {selectedKeyframeBounds && (
+            <span className="text-xs text-slate-500">
+              Sel {selectedKeyframeBounds.start.toFixed(2)}s - {selectedKeyframeBounds.end.toFixed(2)}s
+            </span>
+          )}
+          {keyframeClipboard && (
+            <span className="text-xs text-slate-500">
+              Clipboard {keyframeClipboard.sourceClipName} ({keyframeClipboard.rangeEnd - keyframeClipboard.rangeStart
+                }s)
+            </span>
+          )}
+          {poseClipboard && (
+            <span className="text-xs text-slate-500">Pose {poseClipboard.sourceLabel}</span>
+          )}
         </div>
 
         {/* Edit Controls */}
@@ -705,6 +1149,104 @@ export function AnimationEditor() {
           >
             <Trash2 className="w-3.5 h-3.5 mr-1" />
             Delete
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={handleCopySelectedKeyframes}
+            disabled={selectedKeyframes.size === 0}
+          >
+            Copy
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={handlePasteKeyframes}
+            disabled={!keyframeClipboard}
+          >
+            Paste
+          </Button>
+          <div className="mx-1 h-5 w-px bg-slate-800" />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={() => handleNudgeSelectedKeyframes(-1)}
+            disabled={selectedKeyframes.size === 0}
+          >
+            -1f
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={() => handleNudgeSelectedKeyframes(1)}
+            disabled={selectedKeyframes.size === 0}
+          >
+            +1f
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={() => handleScaleSelectedKeyframes(0.5)}
+            disabled={selectedKeyframes.size < 2}
+          >
+            0.5x
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={() => handleScaleSelectedKeyframes(2)}
+            disabled={selectedKeyframes.size < 2}
+          >
+            2x
+          </Button>
+          <div className="mx-1 h-5 w-px bg-slate-800" />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={handleDuplicateClip}
+          >
+            Dup
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={handleReverseClip}
+          >
+            Reverse
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={handleTrimClipToSelection}
+            disabled={!selectedKeyframeBounds || selectedKeyframeBounds.end <= selectedKeyframeBounds.start}
+          >
+            Trim sel
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={handleRetargetClip}
+          >
+            Retarget MVP
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={handleSplitClip}
+            disabled={currentTime <= frameStep || currentTime >= clip.duration - frameStep}
+          >
+            Split @ playhead
           </Button>
         </div>
 
@@ -777,7 +1319,12 @@ export function AnimationEditor() {
           
           {/* Tracks Timeline */}
           <ScrollArea className="flex-1">
-            <div ref={timelineRef} className="relative" onClick={handleTimelineClick}>
+            <div
+              ref={timelineRef}
+              className="relative select-none touch-none"
+              onClick={handleTimelineClick}
+              onPointerDown={handleTimelinePointerDown}
+            >
               {/* Playhead */}
               <div
                 className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-20 pointer-events-none"
@@ -786,30 +1333,24 @@ export function AnimationEditor() {
                 <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3 h-3 bg-red-500 rounded-sm rotate-45" />
               </div>
 
+              {timelineSelectionBoxStyle && (
+                <div
+                  className="pointer-events-none absolute z-10 rounded border border-blue-400/80 bg-blue-500/15"
+                  style={timelineSelectionBoxStyle}
+                />
+              )}
+
               {/* Track Rows */}
-              {clip.tracks.map((track, index) => (
+              {clip.tracks.map((track) => (
                 <TrackRow
                   key={track.id}
                   track={track}
                   duration={clip.duration}
-                  zoom={zoom}
-                  showCurves={showCurves}
                   selectedKeyframes={selectedKeyframes}
-                  onKeyframeSelect={(id, multi) => {
-                    if (multi) {
-                      setSelectedKeyframes(prev => {
-                        const next = new Set(prev);
-                        if (next.has(id)) next.delete(id);
-                        else next.add(id);
-                        return next;
-                      });
-                    } else {
-                      setSelectedKeyframes(new Set([id]));
-                    }
-                  }}
-                  onKeyframeMove={(keyframeId, newTime) => {
-                    handleMoveKeyframe(track.id, keyframeId, newTime);
-                  }}
+                  previewTimes={keyframePreviewMap}
+                  onKeyframePointerDown={(keyframeId, event) =>
+                    handleKeyframePointerDown(track.id, keyframeId, event)
+                  }
                 />
               ))}
             </div>
@@ -933,6 +1474,110 @@ export function AnimationEditor() {
               >
                 Add constraint
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                onClick={handleSavePoseToLibrary}
+              >
+                Save pose
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                onClick={handleMirrorPose}
+              >
+                Mirror pose
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                onClick={handleCopyPose}
+              >
+                Copy pose
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                onClick={handlePastePose}
+                disabled={!poseClipboard}
+              >
+                Paste pose
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                onClick={handleBakePoseToKeys}
+              >
+                Bake @ playhead
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                onClick={() =>
+                  selectedKeyframeBounds &&
+                  handleBakePoseRange(selectedKeyframeBounds.start, selectedKeyframeBounds.end, 'seleccion')
+                }
+                disabled={!selectedKeyframeBounds || selectedKeyframeBounds.end <= selectedKeyframeBounds.start}
+              >
+                Bake sel
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                onClick={() => handleBakePoseRange(0, clip.duration, 'clip')}
+              >
+                Bake clip
+              </Button>
+            </div>
+
+            <div className="space-y-2 rounded border border-slate-800 bg-slate-950/60 p-2 text-[11px]">
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Paste pose mix</span>
+                <span>{(posePasteBlend * 100).toFixed(0)}%</span>
+              </div>
+              <Slider
+                value={[posePasteBlend]}
+                min={0}
+                max={1}
+                step={0.05}
+                onValueChange={([value]) => setPosePasteBlend(value)}
+              />
+              <div className="grid grid-cols-3 gap-2">
+                {(['x', 'y', 'z'] as const).map((axis) => (
+                  <label key={axis} className="space-y-1 text-slate-400">
+                    <span className="block uppercase">{axis}</span>
+                    <input
+                      type="number"
+                      step="0.05"
+                      className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-100"
+                      value={posePasteOffset[axis]}
+                      onChange={(event) =>
+                        setPosePasteOffset((prev) => ({
+                          ...prev,
+                          [axis]: parseEditableNumber(event.target.value, 0),
+                        }))
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={handleResetPosePaste}
+                >
+                  Reset paste
+                </Button>
+              </div>
             </div>
 
             {(animatorState.ikChains.length > 0 || animatorState.constraints.length > 0) && (
@@ -954,6 +1599,48 @@ export function AnimationEditor() {
 
             <div className="text-[11px] text-slate-500">
               Bone activo: {activeBone?.name ?? 'ninguno'}
+            </div>
+
+            <div className="rounded border border-slate-800 bg-slate-950/60">
+              <div className="border-b border-slate-800 px-2 py-1 text-[11px] text-slate-500">
+                Pose library
+              </div>
+              <div className="max-h-32 overflow-y-auto">
+                {animatorState.poseLibrary.length === 0 && (
+                  <div className="px-2 py-2 text-[11px] text-slate-500">
+                    Guarda una pose del rig/face para reutilizarla despues.
+                  </div>
+                )}
+                {animatorState.poseLibrary.map((pose) => (
+                  <div
+                    key={pose.id}
+                    className="flex items-center gap-2 border-b border-slate-800/60 px-2 py-1 text-[11px] last:border-b-0"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-slate-200">{pose.name}</div>
+                      <div className="text-[10px] text-slate-500">
+                        bones {pose.bones.length} | face {pose.shapeKeys.length}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => handleApplyPoseFromLibrary(pose.id)}
+                    >
+                      Apply
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => handleDeletePoseFromLibrary(pose.id)}
+                    >
+                      Del
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </Card>
@@ -1117,14 +1804,32 @@ export function AnimationEditor() {
                       {stripClip?.name ?? 'Clip'} | {strip.start.toFixed(2)} - {strip.end.toFixed(2)}
                     </div>
                   </div>
-                  <Button
-                    size="sm"
-                    variant={strip.muted ? 'ghost' : 'default'}
-                    className="h-6 text-[11px]"
-                    onClick={() => handleToggleNlaMute(strip.id)}
-                  >
-                    {strip.muted ? 'Muted' : 'Live'}
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => handleOffsetNlaStrip(strip.id, -1)}
+                    >
+                      -1f
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => handleOffsetNlaStrip(strip.id, 1)}
+                    >
+                      +1f
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={strip.muted ? 'ghost' : 'default'}
+                      className="h-6 text-[11px]"
+                      onClick={() => handleToggleNlaMute(strip.id)}
+                    >
+                      {strip.muted ? 'Muted' : 'Live'}
+                    </Button>
+                  </div>
                 </div>
               );
             })}
@@ -1237,30 +1942,28 @@ function TimelineHeader({
 function TrackRow({
   track,
   duration,
-  zoom,
-  showCurves,
   selectedKeyframes,
-  onKeyframeSelect,
-  onKeyframeMove,
+  previewTimes,
+  onKeyframePointerDown,
 }: {
   track: AnimationTrack;
   duration: number;
-  zoom: number;
-  showCurves: boolean;
   selectedKeyframes: Set<string>;
-  onKeyframeSelect: (id: string, multi: boolean) => void;
-  onKeyframeMove: (id: string, newTime: number) => void;
+  previewTimes?: Map<string, number> | null;
+  onKeyframePointerDown: (id: string, event) => void;
 }) {
   return (
     <div className="relative h-6 border-b border-slate-800/50">
       {/* Keyframes */}
       {track.keyframes.map(keyframe => {
-        const percentage = (keyframe.time / duration) * 100;
+        const previewTime = previewTimes?.get(keyframe.id) ?? keyframe.time;
+        const percentage = (previewTime / duration) * 100;
         const isSelected = selectedKeyframes.has(keyframe.id);
         
         return (
           <div
             key={keyframe.id}
+            data-keyframe-handle="true"
             className={cn(
               "absolute top-1/2 -translate-y-1/2 w-3 h-3 cursor-pointer transition-transform",
               isSelected && "scale-125"
@@ -1268,10 +1971,7 @@ function TrackRow({
             style={{
               left: `calc(${percentage}% - 6px)`,
             }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onKeyframeSelect(keyframe.id, e.shiftKey);
-            }}
+            onPointerDown={(event) => onKeyframePointerDown(keyframe.id, event)}
           >
             <Diamond
               className={cn(

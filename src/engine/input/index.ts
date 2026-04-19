@@ -16,3 +16,4 @@ export {
 export { KeyCode } from './InputManager';
 export { MouseButton } from './InputManager';
 export { GamepadButton, GamepadAxis } from './InputManager';
+export { InputRuntimeBridge, inputRuntimeBridge } from './inputRuntimeBridge';

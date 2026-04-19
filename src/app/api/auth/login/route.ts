@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
         action: 'auth.login',
         status: 'denied',
         metadata: { reason: 'missing_credentials' },
+        durability: 'critical',
       });
       return NextResponse.json({ error: 'Credenciales incompletas.' }, { status: 400 });
     }
@@ -41,6 +42,7 @@ export async function POST(request: NextRequest) {
         action: 'auth.login',
         status: 'denied',
         metadata: { reason: 'invalid_user' },
+        durability: 'critical',
       });
       return NextResponse.json({ error: 'Credenciales inválidas.' }, { status: 401 });
     }
@@ -53,6 +55,7 @@ export async function POST(request: NextRequest) {
         action: 'auth.login',
         status: 'denied',
         metadata: { reason: 'invalid_password' },
+        durability: 'critical',
       });
       return NextResponse.json({ error: 'Credenciales inválidas.' }, { status: 401 });
     }
@@ -94,6 +97,7 @@ export async function POST(request: NextRequest) {
       metadata: {
         promotedToOwner: user.role !== effectiveUser.role,
       },
+      durability: 'critical',
     });
 
     return applySessionCookie(response, token, expiresAt);
@@ -103,6 +107,7 @@ export async function POST(request: NextRequest) {
       action: 'auth.login',
       status: 'error',
       metadata: { error: String(error) },
+      durability: 'critical',
     });
     return NextResponse.json({ error: 'No se pudo iniciar sesión.' }, { status: 500 });
   }

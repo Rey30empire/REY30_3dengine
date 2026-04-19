@@ -4,7 +4,7 @@ Lightweight character generation backend for low/medium hardware.
 
 - Target: `2.0 - 3.5 GB` disk footprint
 - GPU: works with `8 GB VRAM` because it does not run heavy local LLM/3D diffusion
-- Mode: procedural mesh + humanoid rig + optional base animations
+- Mode: prompt-conditioned package builder + humanoid rig + validation report + procedural PBR texture set + material descriptors
 
 ## 1) Install
 
@@ -38,14 +38,31 @@ REY30_CHARACTER_BACKEND_POLL_MS=1000
 ```
 
 When `REY30_CHARACTER_BACKEND_URL` is configured, `POST /api/character/full` uses this backend first.
-If backend fails, route falls back to local generator (no app break).
+Local fallback is no longer automatic.
+Only set `REY30_CHARACTER_LOCAL_FALLBACK=true` when you explicitly want the in-app lightweight generator as a development fallback.
 
 ## 4) Endpoints
 
 - `GET /healthz`
+- `POST /v1/character/base-mesh`
 - `POST /v1/character/jobs`
 - `GET /v1/character/jobs/{jobId}`
 - `GET /v1/character/jobs/{jobId}/result`
+
+Each completed job writes a bundle under `mini-services/character-backend/data/output/character_<jobId>/`:
+
+- `package.json`
+- `mesh.json`
+- `rig.json`
+- `animations.json`
+- `blendshapes.json`
+- `materials.json`
+- `report.json`
+- `manifest.json`
+- `textures/*.png`
+
+The prompt now changes silhouette/accessories for archetypes such as guardian, mystic, shadow, ranger, brute and sentinel.
+Texture output now includes `albedo`, `normal`, `roughness`, `metallic`, `ao` and `emissive` maps, plus reusable material slots in `materials.json`.
 
 ## 5) Estimated weight (Profile A)
 

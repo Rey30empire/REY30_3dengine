@@ -17,6 +17,37 @@ const outputDir = args.get('output-dir') || 'output/editor-sculpt-retopo-smoke';
 
 fs.mkdirSync(outputDir, { recursive: true });
 
+async function waitForBridge(page) {
+  await page.waitForSelector('[data-testid="scene-view"]', { timeout: 10000 });
+  await page.waitForFunction(() => typeof window.__REY30_VIEWPORT_TEST__ === 'object');
+}
+
+async function gotoWithRetries(page, url, attempts = 5) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await page.waitForTimeout(750);
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function openPanel(page, label) {
+  await page.getByRole('button', { name: label }).last().click();
+  await page.waitForTimeout(500);
+}
+
+async function selectWorkspace(page, label) {
+  await page.getByRole('button', { name: label, exact: true }).click();
+  await page.waitForTimeout(500);
+}
+
 function meshesDiffer(left, right) {
   if (!left || !right) return true;
   if ((left.vertices?.length ?? 0) !== (right.vertices?.length ?? 0)) return true;
@@ -46,21 +77,34 @@ const browser = await chromium.launch({
 
 const page = await browser.newPage({ viewport: { width: 1560, height: 980 } });
 const consoleErrors = [];
+const requestFailures = [];
 page.on('console', (message) => {
   if (message.type() === 'error') {
-    consoleErrors.push(message.text());
+    consoleErrors.push({
+      text: message.text(),
+      location: message.location(),
+    });
   }
 });
+page.on('requestfailed', (request) => {
+  requestFailures.push({
+    url: request.url(),
+    resourceType: request.resourceType(),
+    errorText: request.failure()?.errorText ?? null,
+  });
+});
 page.on('pageerror', (error) => {
-  consoleErrors.push(String(error));
+  consoleErrors.push({
+    text: String(error),
+    location: null,
+  });
 });
 
 try {
   console.log('smoke:start');
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetries(page, baseUrl);
   await page.waitForTimeout(1500);
-  await page.waitForSelector('[data-testid="scene-view"]', { timeout: 10000 });
-  await page.waitForFunction(() => typeof window.__REY30_VIEWPORT_TEST__ === 'object');
+  await waitForBridge(page);
   console.log('smoke:bridge-ready');
 
   const entityId = await page.evaluate(() => {
@@ -77,8 +121,8 @@ try {
   }
   console.log('smoke:entity-ready');
 
-  await page.getByRole('button', { name: 'Paint' }).click();
-  await page.waitForTimeout(500);
+  await selectWorkspace(page, 'Modeling');
+  await openPanel(page, 'Paint');
   console.log('smoke:paint-tab');
 
   await page.evaluate(() => {
@@ -93,7 +137,7 @@ try {
     });
   });
   await page.waitForTimeout(350);
-  await page.getByText('Sculpt pipeline').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByText('Sculpt Draw').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByText('Multires levels').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByText('Voxel size').waitFor({ state: 'visible', timeout: 10000 });
   console.log('smoke:sculpt-ui-ready');
@@ -130,6 +174,26 @@ try {
     path: path.join(outputDir, 'viewport-sculpt.png'),
   });
 
+  const ignoredRequestFailures = requestFailures.filter(
+    (failure) =>
+      failure.errorText?.includes('ERR_CONNECTION_REFUSED') &&
+      failure.url.includes('/_next/webpack-hmr')
+  );
+  const blockingRequestFailures = requestFailures.filter(
+    (failure) => !ignoredRequestFailures.includes(failure)
+  );
+  const ignoredConsoleErrors =
+    blockingRequestFailures.length === 0
+      ? consoleErrors.filter(
+          (entry) =>
+            entry.text.includes('Failed to load resource: net::ERR_CONNECTION_REFUSED') &&
+            ignoredRequestFailures.length > 0
+        )
+      : [];
+  const blockingConsoleErrors = consoleErrors.filter(
+    (entry) => !ignoredConsoleErrors.includes(entry)
+  );
+
   const report = {
     ok:
       editorState?.mode === 'sculpt_draw' &&
@@ -139,7 +203,8 @@ try {
       (afterMultires?.vertices?.length ?? 0) > (initialMesh?.vertices?.length ?? 0) &&
       (afterVoxel?.faces?.length ?? 0) > (initialMesh?.faces?.length ?? 0) &&
       meshesDiffer(afterMultires, afterVoxel) &&
-      consoleErrors.length === 0,
+      blockingConsoleErrors.length === 0 &&
+      blockingRequestFailures.length === 0,
     editorState,
     initialVertices: initialMesh?.vertices?.length ?? 0,
     initialFaces: initialMesh?.faces?.length ?? 0,
@@ -148,7 +213,12 @@ try {
     afterVoxelVertices: afterVoxel?.vertices?.length ?? 0,
     afterVoxelFaces: afterVoxel?.faces?.length ?? 0,
     meshChangedBetweenOps: meshesDiffer(afterMultires, afterVoxel),
+    ignoredConsoleErrors,
+    blockingConsoleErrors,
+    ignoredRequestFailures,
+    blockingRequestFailures,
     consoleErrors,
+    requestFailures,
   };
 
   fs.writeFileSync(

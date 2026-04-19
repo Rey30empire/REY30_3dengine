@@ -214,6 +214,34 @@ export const DEFAULT_ACTION_MAPS: ActionMapPreset[] = [
         ],
       },
       {
+        name: 'heavyAttack',
+        bindings: [
+          { mouseButton: MouseButton.Right },
+          { gamepadButton: GamepadButton.Y },
+        ],
+      },
+      {
+        name: 'block',
+        bindings: [
+          { mouseButton: MouseButton.Middle },
+          { gamepadButton: GamepadButton.LeftBumper },
+        ],
+      },
+      {
+        name: 'parry',
+        bindings: [
+          { key: KeyCode.Q },
+          { gamepadButton: GamepadButton.LeftTrigger },
+        ],
+      },
+      {
+        name: 'lockTarget',
+        bindings: [
+          { key: KeyCode.Tab },
+          { gamepadButton: GamepadButton.RightBumper },
+        ],
+      },
+      {
         name: 'aim',
         bindings: [
           { mouseButton: MouseButton.Right },
@@ -300,6 +328,7 @@ export class InputManager extends EventEmitter {
   
   // Settings
   private enabled: boolean;
+  private initialized: boolean;
   private pointerLocked: boolean;
   private targetElement: HTMLElement | null;
   
@@ -321,6 +350,7 @@ export class InputManager extends EventEmitter {
     this.actions = new Map();
     this.actionMaps = new Map();
     this.enabled = true;
+    this.initialized = false;
     this.pointerLocked = false;
     this.targetElement = null;
     this.inputBuffer = [];
@@ -345,6 +375,7 @@ export class InputManager extends EventEmitter {
 
   static shutdown(): void {
     this.getInstance().dispose();
+    InputManager.lastUpdateAt = 0;
   }
 
   static update(deltaTime?: number): void {
@@ -446,9 +477,21 @@ export class InputManager extends EventEmitter {
     }
   }
 
+  static clearTransientState(): void {
+    this.getInstance().clearTransientState();
+    InputManager.lastUpdateAt = 0;
+  }
+
   // Initialize
   initialize(element?: HTMLElement): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+
     this.targetElement = element || document.body;
+    if (this.initialized) {
+      return;
+    }
     
     // Keyboard events
     window.addEventListener('keydown', this.onKeyDown);
@@ -472,10 +515,24 @@ export class InputManager extends EventEmitter {
     window.addEventListener('touchstart', this.onTouchStart);
     window.addEventListener('touchend', this.onTouchEnd);
     window.addEventListener('touchmove', this.onTouchMove);
+    this.initialized = true;
   }
 
   // Cleanup
   dispose(): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      this.initialized = false;
+      this.targetElement = null;
+      this.clearTransientState();
+      return;
+    }
+
+    if (!this.initialized) {
+      this.targetElement = null;
+      this.clearTransientState();
+      return;
+    }
+
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('mousedown', this.onMouseDown);
@@ -489,6 +546,9 @@ export class InputManager extends EventEmitter {
     window.removeEventListener('touchstart', this.onTouchStart);
     window.removeEventListener('touchend', this.onTouchEnd);
     window.removeEventListener('touchmove', this.onTouchMove);
+    this.initialized = false;
+    this.targetElement = null;
+    this.clearTransientState();
   }
 
   // Update
@@ -1080,6 +1140,26 @@ export class InputManager extends EventEmitter {
     this.actionMaps.clear();
     this.loadActionMaps(DEFAULT_ACTION_MAPS);
     this.syncInputMap();
+  }
+
+  clearTransientState(): void {
+    this.keyStates.clear();
+    this.mouseStates.clear();
+    this.gamepads.clear();
+    this.gamepadButtonStates.clear();
+    this.touches.clear();
+    this.inputBuffer = [];
+    this._mouseDelta = { x: 0, y: 0 };
+    this._scrollDelta = { x: 0, y: 0 };
+    this.pointerLocked = false;
+    this.actions.forEach((action) => {
+      action.value = 0;
+      action.justPressed = false;
+      action.justReleased = false;
+      action.pressed = false;
+      action.holdTime = 0;
+      InputManager.map.updateActionState(action.name, this.toModernAction(action, action.name));
+    });
   }
 
   // Save/load bindings

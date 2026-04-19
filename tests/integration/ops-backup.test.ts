@@ -13,20 +13,38 @@ describe('Ops backup APIs', () => {
     const backupRoot = path.join(tempRoot, 'backups');
     const scriptsRoot = path.join(tempRoot, 'scripts');
     const galleryRoot = path.join(tempRoot, 'gallery');
+    const packageRoot = path.join(tempRoot, 'packages');
     const prismaRoot = path.join(tempRoot, 'prisma');
     const dbPath = path.join(prismaRoot, 'test.db');
 
     await mkdir(scriptsRoot, { recursive: true });
     await mkdir(galleryRoot, { recursive: true });
+    await mkdir(packageRoot, { recursive: true });
     await mkdir(prismaRoot, { recursive: true });
     await writeFile(path.join(scriptsRoot, 'GameLoop.ts'), 'export const loop = 1;\n', 'utf8');
     await writeFile(path.join(galleryRoot, 'texture.png'), 'fake-image-bytes', 'utf8');
+    await writeFile(
+      path.join(packageRoot, 'Hero.package.json'),
+      JSON.stringify(
+        {
+          name: 'Hero',
+          kinds: ['character'],
+          assets: [{ id: 'asset-1', name: 'Hero', type: 'prefab', path: 'download/assets/hero.glb' }],
+          createdAt: '2026-04-04T00:00:00.000Z',
+          version: 1,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
     await writeFile(dbPath, 'sqlite-placeholder', 'utf8');
 
     const previous = {
       REY30_BACKUP_ROOT: process.env.REY30_BACKUP_ROOT,
       REY30_SCRIPT_ROOT: process.env.REY30_SCRIPT_ROOT,
       REY30_GALLERY_ROOT: process.env.REY30_GALLERY_ROOT,
+      REY30_PACKAGE_ROOT: process.env.REY30_PACKAGE_ROOT,
       REY30_OPS_TOKEN: process.env.REY30_OPS_TOKEN,
       DATABASE_URL: process.env.DATABASE_URL,
     };
@@ -34,6 +52,7 @@ describe('Ops backup APIs', () => {
     process.env.REY30_BACKUP_ROOT = backupRoot;
     process.env.REY30_SCRIPT_ROOT = scriptsRoot;
     process.env.REY30_GALLERY_ROOT = galleryRoot;
+    process.env.REY30_PACKAGE_ROOT = packageRoot;
     process.env.REY30_OPS_TOKEN = 'test-ops-token';
     process.env.DATABASE_URL = `file:${dbPath}`;
 
@@ -51,6 +70,7 @@ describe('Ops backup APIs', () => {
       const createPayload = await createResponse.json();
       const backupId = String(createPayload.backup?.backupId || '');
       expect(backupId).toContain('backup_');
+      expect(createPayload.backup?.totals?.items).toBe(4);
 
       const verifyResponse = await verifyBackupPost(
         new NextRequest('http://localhost/api/ops/backups/verify', {
@@ -91,11 +111,14 @@ describe('Ops backup APIs', () => {
       expect(String(restorePayload.result.historyDir || '')).toContain('_restore_history');
 
       const restoredScript = await readFile(path.join(scriptsRoot, 'GameLoop.ts'), 'utf8');
+      const restoredPackage = await readFile(path.join(packageRoot, 'Hero.package.json'), 'utf8');
       expect(restoredScript).toContain('loop = 1');
+      expect(restoredPackage).toContain('"name": "Hero"');
     } finally {
       process.env.REY30_BACKUP_ROOT = previous.REY30_BACKUP_ROOT;
       process.env.REY30_SCRIPT_ROOT = previous.REY30_SCRIPT_ROOT;
       process.env.REY30_GALLERY_ROOT = previous.REY30_GALLERY_ROOT;
+      process.env.REY30_PACKAGE_ROOT = previous.REY30_PACKAGE_ROOT;
       if (previous.REY30_OPS_TOKEN === undefined) {
         delete process.env.REY30_OPS_TOKEN;
       } else {
@@ -111,20 +134,38 @@ describe('Ops backup APIs', () => {
     const backupRoot = path.join(tempRoot, 'backups');
     const scriptsRoot = path.join(tempRoot, 'scripts');
     const galleryRoot = path.join(tempRoot, 'gallery');
+    const packageRoot = path.join(tempRoot, 'packages');
     const dumpsRoot = path.join(tempRoot, 'db-dumps');
     const dumpPath = path.join(dumpsRoot, 'rey30.dump');
 
     await mkdir(scriptsRoot, { recursive: true });
     await mkdir(galleryRoot, { recursive: true });
+    await mkdir(packageRoot, { recursive: true });
     await mkdir(dumpsRoot, { recursive: true });
     await writeFile(path.join(scriptsRoot, 'GameLoop.ts'), 'export const loop = 2;\n', 'utf8');
     await writeFile(path.join(galleryRoot, 'texture.png'), 'fake-image-bytes-sql', 'utf8');
+    await writeFile(
+      path.join(packageRoot, 'Environment.package.json'),
+      JSON.stringify(
+        {
+          name: 'Environment',
+          kinds: ['scene'],
+          assets: [{ id: 'asset-2', name: 'Arena', type: 'scene', path: 'download/assets/arena.scene' }],
+          createdAt: '2026-04-04T00:00:00.000Z',
+          version: 1,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
     await writeFile(dumpPath, 'postgres-placeholder-dump', 'utf8');
 
     const previous = {
       REY30_BACKUP_ROOT: process.env.REY30_BACKUP_ROOT,
       REY30_SCRIPT_ROOT: process.env.REY30_SCRIPT_ROOT,
       REY30_GALLERY_ROOT: process.env.REY30_GALLERY_ROOT,
+      REY30_PACKAGE_ROOT: process.env.REY30_PACKAGE_ROOT,
       REY30_DATABASE_BACKUP_PATH: process.env.REY30_DATABASE_BACKUP_PATH,
       REY30_OPS_TOKEN: process.env.REY30_OPS_TOKEN,
       DATABASE_URL: process.env.DATABASE_URL,
@@ -133,6 +174,7 @@ describe('Ops backup APIs', () => {
     process.env.REY30_BACKUP_ROOT = backupRoot;
     process.env.REY30_SCRIPT_ROOT = scriptsRoot;
     process.env.REY30_GALLERY_ROOT = galleryRoot;
+    process.env.REY30_PACKAGE_ROOT = packageRoot;
     process.env.REY30_DATABASE_BACKUP_PATH = dumpPath;
     process.env.REY30_OPS_TOKEN = 'test-ops-token';
     process.env.DATABASE_URL = 'postgresql://rey30:secret@db.example.com:5432/rey30?schema=public';
@@ -151,7 +193,7 @@ describe('Ops backup APIs', () => {
       const createPayload = await createResponse.json();
       const backupId = String(createPayload.backup?.backupId || '');
       expect(backupId).toContain('backup_');
-      expect(createPayload.backup?.totals?.items).toBe(3);
+      expect(createPayload.backup?.totals?.items).toBe(4);
 
       const verifyResponse = await verifyBackupPost(
         new NextRequest('http://localhost/api/ops/backups/verify', {
@@ -168,6 +210,7 @@ describe('Ops backup APIs', () => {
       process.env.REY30_BACKUP_ROOT = previous.REY30_BACKUP_ROOT;
       process.env.REY30_SCRIPT_ROOT = previous.REY30_SCRIPT_ROOT;
       process.env.REY30_GALLERY_ROOT = previous.REY30_GALLERY_ROOT;
+      process.env.REY30_PACKAGE_ROOT = previous.REY30_PACKAGE_ROOT;
       process.env.REY30_DATABASE_BACKUP_PATH = previous.REY30_DATABASE_BACKUP_PATH;
       if (previous.REY30_OPS_TOKEN === undefined) {
         delete process.env.REY30_OPS_TOKEN;

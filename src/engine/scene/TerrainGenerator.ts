@@ -270,8 +270,7 @@ export class TerrainGenerator {
   // Generate complete terrain data
   generateTerrain(config: TerrainConfig): TerrainData {
     const { width, depth, segments, scale, octaves, heightMultiplier, erosionIterations, seed } = config;
-
-    const noise = new NoiseGenerator(seed);
+    this.noise = new NoiseGenerator(seed);
     let heightmap = this.generateHeightmap(segments, segments, scale, octaves, heightMultiplier);
 
     if (erosionIterations > 0) {

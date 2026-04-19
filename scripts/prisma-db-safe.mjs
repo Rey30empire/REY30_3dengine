@@ -1,4 +1,5 @@
 import { loadWorkspaceEnv, resolveDatabaseUrl } from './env-utils.mjs';
+import { applyResolvedLocalPostgresEnv } from './local-postgres.mjs';
 import {
   getFallbackDatabaseUrl,
   pathNeedsShadow,
@@ -16,6 +17,7 @@ if (args.length === 0) {
 loadWorkspaceEnv();
 
 async function main() {
+  await applyResolvedLocalPostgresEnv(process.env);
   const root = process.cwd();
   const targetRoot = pathNeedsShadow(root)
     ? await prepareShadowWorkspace({

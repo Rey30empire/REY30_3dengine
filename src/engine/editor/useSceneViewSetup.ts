@@ -6,11 +6,54 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformTools } from './gizmos';
 import { SelectionBox, SelectionManager } from './selection';
 import { scriptRuntime } from '@/engine/gameplay/ScriptRuntime';
+import { audioRuntimeBridge } from '@/engine/audio/audioRuntimeBridge';
+import { UI_RUNTIME_CANVAS_ID, uiRuntimeBridge } from '@/engine/ui-runtime';
+import { GPUParticleSystem } from '@/engine/rendering/GPUParticleSystem';
+import type { ViewportRuntimeMetrics } from './viewport/useViewportTelemetry';
 import {
   DEFAULT_ORTHOGRAPHIC_SIZE,
   setOrthographicSize,
   type ViewportCamera,
 } from './viewportCamera';
+
+declare global {
+  interface Window {
+    __rey30ThreeShaderWarnFilterInstalled?: boolean;
+  }
+}
+
+function installKnownThreeShaderWarningFilter(): void {
+  if (typeof window === 'undefined' || window.__rey30ThreeShaderWarnFilterInstalled) {
+    return;
+  }
+
+  const originalWarn = console.warn.bind(console);
+  console.warn = (...args: unknown[]) => {
+    const [firstArg, ...rest] = args;
+    const message =
+      typeof firstArg === 'string'
+        ? [firstArg, ...rest.filter((value): value is string => typeof value === 'string')].join(' ')
+        : '';
+
+    const isKnownAnglePrecisionWarning =
+      message.includes('THREE.WebGLProgram: Program Info Log:') &&
+      message.includes('warning X4122') &&
+      message.includes('double precision');
+
+    const isKnownClockDeprecationWarning =
+      message.includes('THREE.Clock') &&
+      message.includes('deprecated') &&
+      message.includes('THREE.Timer');
+
+    if (isKnownAnglePrecisionWarning || isKnownClockDeprecationWarning) {
+      return;
+    }
+
+    originalWarn(...args);
+  };
+
+  window.__rey30ThreeShaderWarnFilterInstalled = true;
+}
 
 function disposeSceneResources(scene: THREE.Scene): void {
   scene.traverse((object) => {
@@ -19,6 +62,14 @@ function disposeSceneResources(scene: THREE.Scene): void {
     mesh.geometry?.dispose();
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     materials.forEach((material) => material?.dispose?.());
+  });
+}
+
+function removeStaleViewportCanvases(container: HTMLElement): void {
+  Array.from(container.children).forEach((child) => {
+    if (!(child instanceof HTMLCanvasElement)) return;
+    if (child.id === UI_RUNTIME_CANVAS_ID) return;
+    child.remove();
   });
 }
 
@@ -37,6 +88,7 @@ export function useSceneViewSetup(params: {
   selectionBoxRef: MutableRefObject<SelectionBox | null>;
   renderFrameRef: MutableRefObject<(() => void) | null>;
   resizeViewportRef: MutableRefObject<((width: number, height: number) => void) | null>;
+  viewportRuntimeMetricsRef: MutableRefObject<ViewportRuntimeMetrics>;
 }) {
   const {
     containerRef,
@@ -53,27 +105,29 @@ export function useSceneViewSetup(params: {
     selectionBoxRef,
     renderFrameRef,
     resizeViewportRef,
+    viewportRuntimeMetricsRef,
   } = params;
 
   useEffect(() => {
     if (!containerRef.current || rendererRef.current) return;
 
     const container = containerRef.current;
-    container.querySelectorAll('canvas').forEach((canvas) => {
-      if (canvas.parentElement === container) {
-        container.removeChild(canvas);
-      }
-    });
+    removeStaleViewportCanvases(container);
+    uiRuntimeBridge.attachToContainer(container);
+
+    installKnownThreeShaderWarningFilter();
 
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: true,
       preserveDrawingBuffer: true,
+      precision: 'mediump',
     });
+    renderer.domElement.dataset.rey30ViewportCanvas = 'true';
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.0;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -83,6 +137,24 @@ export function useSceneViewSetup(params: {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x1a1a2e);
     sceneRef.current = scene;
+
+    let gpuParticleSystem: GPUParticleSystem | null = null;
+    try {
+      const candidate = new GPUParticleSystem();
+      candidate.initialize(renderer);
+      if (candidate.isReady()) {
+        candidate.setScene(scene);
+        gpuParticleSystem = candidate;
+      } else {
+        candidate.dispose();
+      }
+    } catch (error) {
+      console.warn('GPU particle preview unavailable, using CPU fallback.', error);
+      gpuParticleSystem = null;
+    }
+    scene.userData.particlePreviewRuntime = {
+      gpuSystem: gpuParticleSystem,
+    };
 
     const camera = new THREE.PerspectiveCamera(
       60,
@@ -205,13 +277,33 @@ export function useSceneViewSetup(params: {
         }
         preview.emitter.update(delta);
       });
+      gpuParticleSystem?.setCamera(cameraRef.current ?? camera);
+      gpuParticleSystem?.update(delta);
+      gpuParticleSystem?.render();
       controls.update();
+      audioRuntimeBridge.syncListener(cameraRef.current ?? camera, delta);
+      const renderStartedAt = performance.now();
       const renderFrame = renderFrameRef.current;
       if (renderFrame) {
         renderFrame();
       } else {
         renderer.render(scene, cameraRef.current ?? camera);
       }
+      const renderFinishedAt = performance.now();
+      const renderInfo = renderer.info.render;
+      const triangleCount = Number.isFinite(renderInfo.triangles) ? renderInfo.triangles : 0;
+      const lineCount = Number.isFinite(renderInfo.lines) ? renderInfo.lines : 0;
+      const pointCount = Number.isFinite(renderInfo.points) ? renderInfo.points : 0;
+      viewportRuntimeMetricsRef.current = {
+        renderCpuTimeMs: Math.max(0, renderFinishedAt - renderStartedAt),
+        gpuTimeMs: 0,
+        drawCalls: Number.isFinite(renderInfo.calls) ? renderInfo.calls : 0,
+        triangles: triangleCount,
+        vertices: triangleCount * 3 + lineCount * 2 + pointCount,
+        textures: Number.isFinite(renderer.info.memory.textures) ? renderer.info.memory.textures : 0,
+        meshes: Number.isFinite(renderer.info.memory.geometries) ? renderer.info.memory.geometries : 0,
+        audioBuffers: audioRuntimeBridge.getActiveSourceCount(),
+      };
     };
     animate();
 
@@ -243,19 +335,14 @@ export function useSceneViewSetup(params: {
       selection.dispose();
       selectionBox.dispose();
 
+      gpuParticleSystem?.dispose();
+      scene.userData.particlePreviewRuntime = null;
       disposeSceneResources(scene);
       (
         renderer as THREE.WebGLRenderer & {
           renderLists?: { dispose?: () => void };
-          forceContextLoss?: () => void;
         }
       ).renderLists?.dispose?.();
-      (
-        renderer as THREE.WebGLRenderer & {
-          renderLists?: { dispose?: () => void };
-          forceContextLoss?: () => void;
-        }
-      ).forceContextLoss?.();
       renderer.dispose();
       if (renderer.domElement.parentElement === container) {
         container.removeChild(renderer.domElement);
@@ -264,6 +351,18 @@ export function useSceneViewSetup(params: {
       timerRef.current.disconnect();
       timerRef.current.reset();
       timerRef.current = new THREE.Timer();
+      audioRuntimeBridge.syncListener(null);
+      uiRuntimeBridge.attachToContainer(null);
+      viewportRuntimeMetricsRef.current = {
+        renderCpuTimeMs: 0,
+        gpuTimeMs: 0,
+        drawCalls: 0,
+        triangles: 0,
+        vertices: 0,
+        textures: 0,
+        meshes: 0,
+        audioBuffers: 0,
+      };
       rendererRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
@@ -291,5 +390,6 @@ export function useSceneViewSetup(params: {
     transformToolsRef,
     renderFrameRef,
     resizeViewportRef,
+    viewportRuntimeMetricsRef,
   ]);
 }

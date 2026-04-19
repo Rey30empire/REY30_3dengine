@@ -11,6 +11,7 @@ export const createAISlice: SliceCreator<AISlice> = (set) => ({
   tasks: [],
   chatMessages: [],
   isAiProcessing: false,
+  agenticMutationIndexAudit: null,
 
   setEngineMode: (mode) =>
     set((state) => {
@@ -77,4 +78,6 @@ export const createAISlice: SliceCreator<AISlice> = (set) => ({
   clearChat: () => set({ chatMessages: [] }),
 
   setAiProcessing: (processing) => set({ isAiProcessing: processing }),
+
+  setAgenticMutationIndexAudit: (audit) => set({ agenticMutationIndexAudit: audit }),
 });

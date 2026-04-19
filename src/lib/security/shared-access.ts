@@ -7,7 +7,6 @@ import type { APIConfig } from '@/lib/api-config';
 import { ApiProvider, type AppApiProvider } from '@/lib/domain-enums';
 import { decryptText } from './crypto';
 import type { AppUserRole } from './user-roles';
-import { isAppUserRole } from './user-roles';
 
 export const SHARED_ACCESS_TOKEN_HEADER_NAME = 'x-rey30-access-token';
 
@@ -72,8 +71,9 @@ function safeCompare(left: string, right: string): boolean {
 export function getSharedAccessEnvConfig(): SharedAccessEnvConfig {
   const token = trimEnv('REY30_SHARED_ACCESS_TOKEN');
   const email = normalizeEmail(trimEnv('REY30_SHARED_ACCESS_EMAIL') || 'shared-access@rey30.local');
-  const configuredRole = trimEnv('REY30_SHARED_ACCESS_ROLE').toUpperCase();
-  const role = isAppUserRole(configuredRole) ? configuredRole : 'OWNER';
+  // Shared-token sessions stay capped to collaborator permissions even if the environment
+  // still carries an older elevated role setting.
+  const role: AppUserRole = 'VIEWER';
 
   return {
     enabled: token.length > 0,

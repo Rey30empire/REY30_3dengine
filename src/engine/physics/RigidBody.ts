@@ -644,8 +644,8 @@ export class RigidBody {
    * Update this body from a Three.js mesh
    */
   syncFromMesh(mesh: THREE.Object3D): void {
-    this.position.copy(mesh.position);
-    this.quaternion.copy(mesh.quaternion);
+    this.position = mesh.position.clone();
+    this.quaternion = mesh.quaternion.clone();
   }
   
   /**

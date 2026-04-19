@@ -14,6 +14,7 @@ import {
   publicErrorResponse,
 } from '@/lib/security/public-error';
 import { fetchRemoteText, RemoteFetchError } from '@/lib/security/remote-fetch';
+import { upsertProviderJobRecord } from '@/lib/server/external-integration-store';
 
 const DEFAULT_MESHY_API_URL = 'https://api.meshy.ai/v2';
 
@@ -33,6 +34,16 @@ async function resolveMeshyConfig(request: NextRequest): Promise<{
   };
 }
 
+function normalizeTaskStatus(raw: string): 'queued' | 'processing' | 'completed' | 'failed' | 'canceled' {
+  const value = raw.trim().toLowerCase();
+  if (!value) return 'processing';
+  if (value.includes('queue') || value.includes('pending')) return 'queued';
+  if (value.includes('cancel')) return 'canceled';
+  if (value.includes('fail') || value.includes('error')) return 'failed';
+  if (value.includes('complete') || value.includes('succeed') || value === 'done') return 'completed';
+  return 'processing';
+}
+
 // POST - Create new 3D model generation task
 export async function POST(request: NextRequest) {
   const correlationId = createCorrelationId(request);
@@ -48,7 +59,7 @@ export async function POST(request: NextRequest) {
         metadata: { reason: 'missing_api_key_or_disabled' },
       });
       return NextResponse.json(
-        { error: 'Meshy API key no configurada para tu cuenta.' },
+        { error: 'El servicio no está disponible para esta sesión.' },
         { status: 401 }
       );
     }
@@ -146,7 +157,39 @@ export async function POST(request: NextRequest) {
         projectKey,
       }),
     ]);
-    return NextResponse.json({ success: true, ...result });
+    const taskId =
+      typeof result.result === 'string'
+        ? result.result
+        : typeof result.id === 'string'
+          ? result.id
+          : typeof result.taskId === 'string'
+            ? result.taskId
+            : '';
+    const status = normalizeTaskStatus(String(result.status || 'queued'));
+    if (taskId) {
+      await upsertProviderJobRecord({
+        provider: 'meshy',
+        userId: config.userId,
+        projectKey: projectKey || 'untitled_project',
+        action: usageAction,
+        remoteTaskId: taskId,
+        status,
+        requestSummary: {
+          mode: mode || (image_url ? 'image_to_3d' : 'preview'),
+          topology: topology || undefined,
+          targetFaceCount: target_face_count || undefined,
+          enablePbr: enable_pbr !== false,
+        },
+        result: {
+          rawStatus: String(result.status || ''),
+        },
+      });
+    }
+    return NextResponse.json({
+      success: true,
+      status,
+      taskId: taskId || undefined,
+    });
   } catch (error) {
     if (isUsageLimitError(error)) {
       await logSecurityEvent({
@@ -212,21 +255,20 @@ export async function GET(request: NextRequest) {
     } catch {
       return NextResponse.json({
         configured: false,
-        baseUrl: DEFAULT_MESHY_API_URL,
-        error: 'Usuario no autenticado',
+        available: false,
       });
     }
 
     if (!taskId) {
       return NextResponse.json({
         configured: !!config.apiKey && config.enabled,
-        baseUrl: config.baseUrl,
+        available: !!config.apiKey && config.enabled,
       });
     }
 
     if (!config.apiKey || !config.enabled) {
       return NextResponse.json(
-        { error: 'Meshy API key not configured' },
+        { error: 'El servicio no está disponible para esta sesión.' },
         { status: 401 }
       );
     }
@@ -253,7 +295,37 @@ export async function GET(request: NextRequest) {
 
     const result = text.trim() ? JSON.parse(text) : {};
     await touchProviderUsage(config.userId, 'meshy');
-    return NextResponse.json(result);
+    const url =
+      typeof result.model_urls?.glb === 'string'
+        ? result.model_urls.glb
+        : typeof result.url === 'string'
+          ? result.url
+          : '';
+    const thumbnailUrl = typeof result.thumbnail_url === 'string' ? result.thumbnail_url : '';
+    const status = url
+      ? 'completed'
+      : normalizeTaskStatus(String(result.status || result.state || 'processing'));
+    await upsertProviderJobRecord({
+      provider: 'meshy',
+      userId: config.userId,
+      projectKey: normalizeProjectKey(request.headers.get('x-rey30-project')) || 'untitled_project',
+      action: 'status',
+      remoteTaskId: taskId,
+      status,
+      result: {
+        url: url || undefined,
+        thumbnailUrl: thumbnailUrl || undefined,
+        progress: typeof result.progress === 'number' ? result.progress : undefined,
+        rawStatus: String(result.status || result.state || ''),
+      },
+    });
+    return NextResponse.json({
+      success: true,
+      status,
+      progress: typeof result.progress === 'number' ? result.progress : undefined,
+      url: url || undefined,
+      thumbnailUrl: thumbnailUrl || undefined,
+    });
   } catch (error) {
     if (error instanceof RemoteFetchError) {
       return publicErrorResponse({

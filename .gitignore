@@ -42,6 +42,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+tsconfig.typecheck-safe.generated.json
 local-*
 !src/lib/local-ai-config.ts
 .claude
@@ -53,6 +54,7 @@ prompt
 server.log
 # Skills directory
 /skills/
+/assets/
 /download/
 /output/
 /output_Rey30/

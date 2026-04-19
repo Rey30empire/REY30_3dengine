@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { access, cp, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const DEFAULT_EXCLUDED = new Set([
+const DEFAULT_EXCLUDED_TOP_LEVEL = new Set([
   '.git',
   '.next',
   '.next-typecheck',
@@ -17,6 +17,14 @@ const DEFAULT_EXCLUDED = new Set([
   'dev.log',
   'server.log',
   'next.log',
+]);
+
+const DEFAULT_EXCLUDED_BASENAME = new Set([
+  '.git',
+  '.next',
+  '.next-typecheck',
+  '.turbo',
+  'node_modules',
 ]);
 
 const SHADOW_META_FILE = '.rey30-shadow-meta.json';
@@ -97,7 +105,28 @@ async function updateShadowMeta(shadowRoot, updater) {
   await writeShadowMeta(shadowRoot, next);
 }
 
-export async function copyProjectToShadow(sourceRoot, shadowRoot, excluded = DEFAULT_EXCLUDED) {
+function shouldExcludeShadowEntry(relativePath, sourcePath, {
+  excludedTopLevel = DEFAULT_EXCLUDED_TOP_LEVEL,
+  excludedBasename = DEFAULT_EXCLUDED_BASENAME,
+} = {}) {
+  if (!relativePath) return false;
+
+  const topLevelSegment = relativePath.split(path.sep)[0];
+  if (excludedTopLevel.has(topLevelSegment)) {
+    return true;
+  }
+
+  return excludedBasename.has(path.basename(sourcePath));
+}
+
+export async function copyProjectToShadow(
+  sourceRoot,
+  shadowRoot,
+  {
+    excludedTopLevel = DEFAULT_EXCLUDED_TOP_LEVEL,
+    excludedBasename = DEFAULT_EXCLUDED_BASENAME,
+  } = {}
+) {
   const sourcePath = await realpath(sourceRoot).catch(() => sourceRoot);
   await mkdir(shadowRoot, { recursive: true });
   const existingEntries = await readdir(shadowRoot, { withFileTypes: true }).catch(() => []);
@@ -114,12 +143,10 @@ export async function copyProjectToShadow(sourceRoot, shadowRoot, excluded = DEF
     force: true,
     filter: (src) => {
       const relative = path.relative(sourcePath, src);
-      if (!relative) return true;
-      const top = relative.split(path.sep)[0];
-      if (excluded.has(top)) return false;
-      const base = path.basename(src);
-      if (excluded.has(base)) return false;
-      return true;
+      return !shouldExcludeShadowEntry(relative, src, {
+        excludedTopLevel,
+        excludedBasename,
+      });
     },
   });
 }
@@ -272,3 +299,7 @@ export async function syncRelativePathBack(shadowRoot, sourceRoot, relativePath)
   await rm(destinationPath, { recursive: true, force: true }).catch(() => undefined);
   await cp(sourcePath, destinationPath, { recursive: true, force: true });
 }
+
+export const __shadowWorkspaceInternals = {
+  shouldExcludeShadowEntry,
+};

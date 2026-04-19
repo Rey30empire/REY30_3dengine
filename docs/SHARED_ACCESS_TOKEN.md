@@ -7,7 +7,7 @@ This app can run in a shared-access mode for collaborators who should not create
 - A collaborator pastes one shared token in the app.
 - The app creates a normal session cookie behind the scenes.
 - OpenAI and Meshy credentials come from server env vars.
-- Collaborators can also call protected API routes directly with `Authorization: Bearer <token>`.
+- Collaborators can also call shared-token-enabled API routes directly with `Authorization: Bearer <token>`.
 
 ## Required env vars
 
@@ -17,8 +17,10 @@ MESHY_API_KEY=msy_...
 REY30_SHARED_ACCESS_TOKEN=replace_with_shared_access_token
 REY30_SHARED_ACCESS_EMAIL=shared-access@rey30.local
 REY30_SHARED_ACCESS_NAME=REY30 Shared Access
-REY30_SHARED_ACCESS_ROLE=OWNER
+REY30_SHARED_ACCESS_ROLE=VIEWER
 ```
+
+Shared-token sessions are always capped to collaborator/`VIEWER` permissions. Higher values are ignored.
 
 ## Invite profile OpenAI rotation
 
@@ -49,7 +51,7 @@ Important:
 2. Go to `Usuario / Config APIs`.
 3. Choose `Token de acceso`.
 4. Paste the shared token.
-5. The app creates a session and exposes OpenAI + Meshy using the server-managed credentials.
+5. The app creates a collaborator session and exposes OpenAI + Meshy using the server-managed credentials.
 
 ## Direct API usage
 
@@ -71,6 +73,7 @@ curl https://your-domain.com/api/meshy \
 ## Notes
 
 - Anyone with the shared token can consume your OpenAI and Meshy quota.
+- The shared token does not unlock `EDITOR` or `OWNER` routes.
 - Treat the token like a secret.
 - Rotate it by changing `REY30_SHARED_ACCESS_TOKEN` and redeploying.
 - Rotate the shared OpenAI provider key with `INVITE_PROFILE_OPENAI_API_KEY` + `scripts/rotate-invite-openai-key.ts`.

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { loadWorkspaceEnv } from './env-utils.mjs';
+import { applyResolvedLocalPostgresEnv } from './local-postgres.mjs';
 import {
   pathNeedsShadow,
   prepareShadowWorkspace,
@@ -10,6 +11,7 @@ loadWorkspaceEnv();
 
 async function main() {
   const root = process.cwd();
+  await applyResolvedLocalPostgresEnv(process.env);
   const args = process.argv.slice(2);
   const vitestArgs = args.length > 0 ? args : ['run'];
 

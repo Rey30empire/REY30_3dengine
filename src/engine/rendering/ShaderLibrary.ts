@@ -501,12 +501,14 @@ export class UniformManager {
   private globalUniforms: Map<string, THREE.IUniform> = new Map();
   private materialUniforms: Map<string, Map<string, THREE.IUniform>> = new Map();
   private autoUpdateCallbacks: Map<string, () => unknown> = new Map();
-  private clock: THREE.Clock;
+  private startTime: number;
+  private lastTickTime: number;
   private camera: THREE.Camera | null = null;
   private lights: THREE.Light[] = [];
 
   constructor() {
-    this.clock = new THREE.Clock();
+    this.startTime = performance.now();
+    this.lastTickTime = this.startTime;
     this.initializeGlobalUniforms();
   }
 
@@ -542,8 +544,13 @@ export class UniformManager {
     this.setGlobalUniform('uFogDensity', { value: 0.01 });
 
     // Register auto-update callbacks
-    this.setAutoUpdateCallback('uTime', () => this.clock.getElapsedTime());
-    this.setAutoUpdateCallback('uDeltaTime', () => this.clock.getDelta());
+    this.setAutoUpdateCallback('uTime', () => (performance.now() - this.startTime) / 1000);
+    this.setAutoUpdateCallback('uDeltaTime', () => {
+      const now = performance.now();
+      const delta = Math.min((now - this.lastTickTime) / 1000, 0.1);
+      this.lastTickTime = now;
+      return delta;
+    });
     this.setAutoUpdateCallback('uFrameCount', () => {
       const frameUniform = this.globalUniforms.get('uFrameCount');
       return (frameUniform?.value as number || 0) + 1;
@@ -697,7 +704,8 @@ export class UniformManager {
    * Reset clock
    */
   resetClock(): void {
-    this.clock = new THREE.Clock();
+    this.startTime = performance.now();
+    this.lastTickTime = this.startTime;
     const frameUniform = this.globalUniforms.get('uFrameCount');
     if (frameUniform) frameUniform.value = 0;
   }

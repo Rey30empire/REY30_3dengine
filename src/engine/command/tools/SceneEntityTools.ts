@@ -7,6 +7,8 @@ import { z } from 'zod';
 import { createTool } from './ToolRegistry';
 import type { ToolDefinition } from '../types';
 import { useEngineStore } from '@/store/editorStore';
+import { createDefaultAudioSourceData } from '@/engine/audio/audioSourceData';
+import { createDefaultAnimatorComponentData } from '@/engine/animation/animatorAuthoring';
 import { EntityFactory } from '@/engine/core/ECS';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -479,9 +481,9 @@ export const entity_addComponent = createTool()
       Camera: { fov: 60, near: 0.1, far: 1000, orthographic: false, isMain: false },
       Collider: { type: 'box', isTrigger: false, center: { x: 0, y: 0, z: 0 } },
       Rigidbody: { mass: 1, drag: 0, angularDrag: 0.05, useGravity: true, isKinematic: false },
-      AudioSource: { clipId: null, volume: 1, loop: false, playOnStart: false },
-      ParticleSystem: { maxParticles: 1000, duration: 5, looping: true },
-      Animator: { controllerId: null, currentAnimation: null },
+      AudioSource: createDefaultAudioSourceData() as unknown as Record<string, unknown>,
+      ParticleSystem: { presetId: null, simulationBackend: 'auto', maxParticles: 1000, duration: 5, looping: true },
+      Animator: createDefaultAnimatorComponentData(entity.name) as unknown as Record<string, unknown>,
       Script: { scriptId: null, parameters: {} },
     };
     

@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Textarea } from '@/components/ui/textarea';
+import { loadClientAuthSession } from '@/lib/client-auth-session';
 import { useEngineStore } from '@/store/editorStore';
 import { cn } from '@/lib/utils';
 import {
@@ -131,7 +132,7 @@ interface AuthSessionPayload {
 }
 
 const MODELER_AUTH_HINT =
-  'Inicia sesion en Config APIs -> Usuario para guardar meshes y presets persistentes.';
+  'Inicia sesion con una cuenta autorizada para guardar meshes y presets persistentes.';
 const MODELER_MODIFIER_PRESETS_STORAGE_KEY = 'rey30:modeler:modifier-presets:v1';
 const MODELER_DETACHED_STACK_STORAGE_KEY = 'rey30:modeler:detached-modifier-stack:v1';
 
@@ -1475,18 +1476,11 @@ function ModelerWorkspace({
 
     const refreshSession = async () => {
       setSessionChecking(true);
-      try {
-        const response = await fetch('/api/auth/session', { cache: 'no-store' });
-        const payload = (await response.json().catch(() => ({}))) as AuthSessionPayload;
-        if (cancelled) return;
-        setSessionReady(Boolean(payload.authenticated));
-      } catch {
-        if (cancelled) return;
-        setSessionReady(false);
-      } finally {
-        if (!cancelled) {
-          setSessionChecking(false);
-        }
+      const payload = await loadClientAuthSession();
+      if (cancelled) return;
+      setSessionReady(Boolean(payload.authenticated));
+      if (!cancelled) {
+        setSessionChecking(false);
       }
     };
 
@@ -3243,6 +3237,8 @@ function ModelerWorkspace({
                   <div
                     key={preset.id}
                     className="rounded-md border border-slate-800 bg-slate-950/80 p-2"
+                    data-testid="modeler-built-in-preset-entry"
+                    data-preset-name={preset.name}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -3254,6 +3250,7 @@ function ModelerWorkspace({
                           className="mb-2 h-20 w-full max-w-[220px]"
                           width={176}
                           height={112}
+                          eager
                         />
                         <div className="text-xs text-slate-200">{preset.name}</div>
                         <div className="text-[10px] text-slate-500">{preset.description}</div>

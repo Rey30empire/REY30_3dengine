@@ -110,6 +110,25 @@ async function getSessionPayload(page) {
   });
 }
 
+async function waitForPerformanceSnapshot(page, timeoutMs = 12000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const payload = await page.evaluate(async () => {
+      const response = await fetch('/api/telemetry', { cache: 'no-store' });
+      return response.json().catch(() => ({}));
+    });
+
+    if ((payload?.snapshot?.totals?.performanceSamples ?? 0) > 0) {
+      return payload.snapshot;
+    }
+
+    await page.waitForTimeout(750);
+  }
+
+  return null;
+}
+
 async function loginThroughUi(page) {
   await openPanel(page, 'Config APIs');
   await page.getByText('Usuario / Config APIs').waitFor({ timeout: 15000 });
@@ -267,6 +286,8 @@ try {
     fullPage: true,
   });
 
+  const performanceSnapshot = await waitForPerformanceSnapshot(page);
+
   const report = {
     ok:
       assetsHintVisibleBeforeLogin &&
@@ -276,6 +297,7 @@ try {
       sessionPayload?.user?.role === role &&
       typeof stillAsset?.path === 'string' &&
       stillAsset.path.includes('/texture/compositor/') &&
+      (performanceSnapshot?.totals?.performanceSamples ?? 0) > 0 &&
       consoleErrors.length === 0,
     baseUrl,
     email,
@@ -288,6 +310,7 @@ try {
     sessionAuthenticatedAfterReload: Boolean(sessionPayload?.authenticated),
     sessionCookiePresentAfterReload,
     stillAssetPath: stillAsset?.path ?? null,
+    performanceSnapshot,
     consoleErrors,
   };
 

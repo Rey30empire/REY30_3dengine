@@ -1,10 +1,21 @@
 import path from 'node:path';
 import { defineConfig } from 'vitest/config';
+import { loadWorkspaceEnv } from './scripts/env-utils.mjs';
+
+loadWorkspaceEnv({
+  baseDir: __dirname,
+  envFiles: ['.env', '.env.local', '.env.production', '.env.production.local'],
+});
 
 export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
+    clearMocks: true,
+    restoreMocks: true,
+    unstubGlobals: true,
+    unstubEnvs: true,
+    setupFiles: ['tests/setup/test-isolation.ts'],
     include: [
       'tests/unit/**/*.test.ts',
       'tests/integration/**/*.test.ts',

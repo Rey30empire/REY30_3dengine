@@ -1,7 +1,14 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
-import { listAssets } from '@/engine/assets/pipeline';
+import {
+  getAssetRoot,
+  listAssets,
+  resolveManagedAssetAbsolutePath,
+  resolveManagedAssetStorageObject,
+  type PipelineAsset,
+} from '@/engine/assets/pipeline';
+import { getStoredAssetBinary } from '@/lib/server/asset-storage';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 
 function getMimeType(fileName: string): string {
@@ -45,13 +52,38 @@ function getMimeType(fileName: string): string {
   }
 }
 
+const TRANSPARENT_PREVIEW_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+  'base64'
+);
+
+function isImagePreviewPath(fileName: string): boolean {
+  const ext = path.extname(fileName).toLowerCase();
+  return ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg'].includes(ext);
+}
+
+function buildMissingPreviewResponse() {
+  return new NextResponse(new Uint8Array(TRANSPARENT_PREVIEW_PNG), {
+    headers: {
+      'Content-Type': 'image/png',
+      'Cache-Control': 'private, max-age=60',
+      'X-REY30-Preview-Missing': '1',
+    },
+  });
+}
+
 export async function GET(request: NextRequest) {
+  let requestedPath = '';
+  let requestedId = '';
+  let previewRequested = false;
+
   try {
     await requireSession(request, 'VIEWER');
 
     const { searchParams } = new URL(request.url);
-    const requestedPath = (searchParams.get('path') || '').trim().replace(/\\/g, '/');
-    const requestedId = (searchParams.get('id') || '').trim();
+    requestedPath = (searchParams.get('path') || '').trim().replace(/\\/g, '/');
+    requestedId = (searchParams.get('id') || '').trim();
+    previewRequested = searchParams.get('preview') === '1';
 
     if (!requestedPath && !requestedId) {
       return NextResponse.json(
@@ -68,19 +100,16 @@ export async function GET(request: NextRequest) {
     );
 
     if (!asset) {
+      if (previewRequested && requestedPath && isImagePreviewPath(requestedPath)) {
+        return buildMissingPreviewResponse();
+      }
       return NextResponse.json({ error: 'Asset not found' }, { status: 404 });
     }
 
-    const filePath = path.resolve(process.cwd(), asset.path);
-    const relativeToCwd = path.relative(process.cwd(), filePath);
-    if (relativeToCwd.startsWith('..') || path.isAbsolute(relativeToCwd)) {
-      return NextResponse.json({ error: 'Invalid asset path' }, { status: 400 });
-    }
-
-    const content = await fs.readFile(filePath);
-    return new NextResponse(content, {
+    const { content, contentType } = await readAssetContent(asset);
+    return new NextResponse(new Uint8Array(content), {
       headers: {
-        'Content-Type': getMimeType(asset.path),
+        'Content-Type': contentType,
         'Cache-Control': asset.type === 'texture' ? 'private, max-age=300' : 'no-store',
       },
     });
@@ -88,7 +117,69 @@ export async function GET(request: NextRequest) {
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {
       return authErrorToResponse(error);
     }
+    if (previewRequested && requestedPath && isImagePreviewPath(requestedPath)) {
+      return buildMissingPreviewResponse();
+    }
+    if (String(error).includes('Invalid asset path')) {
+      return NextResponse.json({ error: 'Invalid asset path' }, { status: 400 });
+    }
     console.error('[assets][file] failed:', error);
     return NextResponse.json({ error: 'File not found' }, { status: 404 });
   }
+}
+
+async function readAssetContent(asset: PipelineAsset): Promise<{
+  content: Buffer;
+  contentType: string;
+}> {
+  if (asset.metadata?.library === true) {
+    const filePath = resolveAssetFilePath(asset);
+    const content = await fs.readFile(filePath);
+    return {
+      content,
+      contentType: getMimeType(asset.path),
+    };
+  }
+
+  const storage = resolveManagedAssetStorageObject(asset);
+  if (storage) {
+    const stored = await getStoredAssetBinary(storage);
+    if (stored) {
+      return {
+        content: stored.buffer,
+        contentType: stored.contentType || getMimeType(asset.path),
+      };
+    }
+
+    if (storage.backend !== 'filesystem') {
+      throw new Error('Asset file not found');
+    }
+  }
+
+  const filePath = resolveAssetFilePath(asset);
+  const content = await fs.readFile(filePath);
+  return {
+    content,
+    contentType: getMimeType(asset.path),
+  };
+}
+
+function resolveAssetFilePath(asset: PipelineAsset) {
+  if (asset.metadata?.library === true) {
+    const filePath = path.resolve(process.cwd(), asset.path);
+    const relativeToCwd = path.relative(process.cwd(), filePath);
+    if (relativeToCwd.startsWith('..') || path.isAbsolute(relativeToCwd)) {
+      throw new Error('Invalid asset path');
+    }
+    return filePath;
+  }
+
+  const filePath = resolveManagedAssetAbsolutePath(asset);
+  const assetRoot = path.resolve(getAssetRoot());
+  const relativeToRoot = path.relative(assetRoot, filePath);
+  if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+    throw new Error('Invalid asset path');
+  }
+
+  return filePath;
 }

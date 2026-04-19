@@ -69,8 +69,8 @@ Codigo principal:
 `PresetManager`
 
 - persiste presets via adapter
-- hoy usa JSON en `localStorage`
-- manana puede migrarse a API o filesystem sin romper el nucleo
+- hoy prioriza biblioteca persistente por proyecto cuando el backend esta disponible
+- mantiene fallback JSON en `localStorage` para compatibilidad temporal
 
 `CharacterLibraryBuilder`
 
@@ -104,15 +104,23 @@ El adaptador actual hace esto:
 
 - carga metadata desde `public/library/*.metadata.json`
 - usa fallbacks conocidos si falta un JSON
-- guarda presets JSON en `localStorage`
+- guarda presets del builder en backend de proyecto cuando hay sesion valida
+- conserva fallback local si el backend no esta disponible
+- expone manifest descargable del preset persistido para salida operativa comun
+- expone paquete comun de personajes para homologar la salida con Modular Lab
 - reporta eventos al `consoleManager`
 
 Faltan wrappers reales del engine para:
 
 - attachment de piezas skinned a sockets verdaderos del runtime
 - deteccion de drop sobre el personaje 3D dentro del viewport global
-- persistencia en disco o backend de presets
 - sincronizacion del personaje ensamblado con el `SceneView`
+
+Rutas operativas actuales para presets:
+
+- [src/app/api/character/presets/route.ts](/C:/Users/rey30/REY30_3dengine/src/app/api/character/presets/route.ts)
+- [src/app/api/character/presets/download/route.ts](/C:/Users/rey30/REY30_3dengine/src/app/api/character/presets/download/route.ts)
+- [src/app/api/character/package/route.ts](/C:/Users/rey30/REY30_3dengine/src/app/api/character/package/route.ts)
 
 ## Por que no esta metido dentro de una sola funcion
 

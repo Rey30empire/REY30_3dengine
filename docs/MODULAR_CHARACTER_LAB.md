@@ -28,6 +28,12 @@ El MVP implementado ya cubre:
 - Registro del tab en editor:
   - [src/engine/editor/EditorLayout.tsx](/C:/Users/rey30/REY30_3dengine/src/engine/editor/EditorLayout.tsx)
 
+El workspace ahora expone una superficie comun de catalogo via:
+
+- [src/app/api/character/catalog/route.ts](/C:/Users/rey30/REY30_3dengine/src/app/api/character/catalog/route.ts)
+- [src/lib/server/character-catalog.ts](/C:/Users/rey30/REY30_3dengine/src/lib/server/character-catalog.ts)
+- [src/app/api/character/package/route.ts](/C:/Users/rey30/REY30_3dengine/src/app/api/character/package/route.ts)
+
 ## Arquitectura
 
 ### Frontend

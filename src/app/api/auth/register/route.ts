@@ -125,6 +125,7 @@ export async function POST(request: NextRequest) {
         action: 'auth.register',
         status: 'denied',
         metadata: { reason: 'invalid_payload' },
+        durability: 'critical',
       });
       return NextResponse.json(
         { error: 'Email valido y contrasena de minimo 8 caracteres requeridos.' },
@@ -138,6 +139,7 @@ export async function POST(request: NextRequest) {
         action: 'auth.register',
         status: 'denied',
         metadata: { reason: 'registration_policy_blocked', mode: getRegistrationMode() },
+        durability: 'critical',
       });
       return NextResponse.json({ error: 'Registro deshabilitado o requiere invitacion.' }, { status: 403 });
     }
@@ -199,6 +201,7 @@ export async function POST(request: NextRequest) {
             action: 'auth.register',
             status: 'denied',
             metadata: { reason: 'email_exists' },
+            durability: 'critical',
           });
           return NextResponse.json({ error: 'El correo ya esta registrado.' }, { status: 409 });
         }
@@ -235,6 +238,7 @@ export async function POST(request: NextRequest) {
       action: 'auth.register',
       status: 'allowed',
       metadata: { role },
+      durability: 'critical',
     });
 
     return applySessionCookie(response, token, expiresAt);
@@ -244,6 +248,7 @@ export async function POST(request: NextRequest) {
       action: 'auth.register',
       status: 'error',
       metadata: { error: String(error) },
+      durability: 'critical',
     });
     return NextResponse.json({ error: 'No se pudo registrar la cuenta.' }, { status: 500 });
   }

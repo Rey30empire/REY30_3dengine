@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadWorkspaceEnv, resolveDatabaseUrl } from './env-utils.mjs';
+import { collectProductionEnvInputs } from './production-env.mjs';
 
 function parseArgs(argv) {
   const args = new Map();
@@ -61,6 +62,60 @@ function normalizeBaseUrl(baseUrl) {
   return parsed.toString().replace(/\/+$/, '');
 }
 
+function normalizeDeploymentProfile(value) {
+  const normalized = trim(value).toLowerCase();
+  if (
+    normalized === 'target-real' ||
+    normalized === 'target' ||
+    normalized === 'real' ||
+    normalized === 'true'
+  ) {
+    return 'target-real';
+  }
+  return 'rehearsal';
+}
+
+function isLocalBaseUrl(baseUrl) {
+  if (!baseUrl) return true;
+  const hostname = new URL(baseUrl).hostname.trim().toLowerCase();
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  );
+}
+
+function isFileDatabaseUrl(databaseUrl) {
+  const normalized = trim(databaseUrl).toLowerCase();
+  return normalized.startsWith('file:') || normalized.startsWith('sqlite:');
+}
+
+function resolveStorageBackend(env, explicitKey, runtimeFallback = false) {
+  const explicit = trim(env[explicitKey]).toLowerCase();
+  if (explicit === 'filesystem' || explicit === 'netlify-blobs') {
+    return explicit;
+  }
+  return runtimeFallback ? 'netlify-blobs' : 'filesystem';
+}
+
+function inferNetlifyRuntime(env) {
+  return trim(env.NETLIFY) === 'true' || Boolean(trim(env.CONTEXT)) || Boolean(trim(env.DEPLOY_ID));
+}
+
+function makeStorageCheck(id, label, backend, deploymentProfile) {
+  if (deploymentProfile === 'target-real' && backend === 'filesystem') {
+    return makeCheck(
+      id,
+      'failed',
+      `${label} still uses filesystem storage. Target-real seal requires shared durable storage.`,
+      { backend }
+    );
+  }
+
+  return makeCheck(id, 'passed', `${label} uses ${backend} storage.`, { backend });
+}
+
 function getRemoteFetchStatus(env) {
   const providers = [
     'REY30_REMOTE_FETCH_ALLOWLIST_OPENAI',
@@ -102,6 +157,7 @@ function getRemoteFetchStatus(env) {
 
 export function evaluateProductionEnv(env, options = {}) {
   const baseUrl = normalizeBaseUrl(options.baseUrl);
+  const deploymentProfile = normalizeDeploymentProfile(options.deploymentProfile);
   const checks = [];
   const databaseUrl = resolveDatabaseUrl(env);
   const nodeEnv = trim(env.NODE_ENV).toLowerCase();
@@ -120,6 +176,30 @@ export function evaluateProductionEnv(env, options = {}) {
   const terminalApiRemoteEnabled = asBoolean(env.REY30_ENABLE_TERMINAL_API_REMOTE, false);
   const smokeEmail = trim(env.SMOKE_USER_EMAIL);
   const smokePassword = trim(env.SMOKE_USER_PASSWORD);
+  const explicitEnvKeys = new Set(options.explicitEnvKeys || []);
+  const isNetlify = inferNetlifyRuntime(env);
+  const storageBackends = {
+    scripts: resolveStorageBackend(env, 'REY30_SCRIPT_STORAGE_BACKEND', isNetlify),
+    gallery: resolveStorageBackend(env, 'REY30_GALLERY_STORAGE_BACKEND', isNetlify),
+    packages: resolveStorageBackend(env, 'REY30_PACKAGE_STORAGE_BACKEND', isNetlify),
+    assets: resolveStorageBackend(env, 'REY30_ASSET_STORAGE_BACKEND', isNetlify),
+    modularCharacters: resolveStorageBackend(
+      env,
+      'REY30_MODULAR_CHARACTER_STORAGE_BACKEND',
+      isNetlify
+    ),
+  };
+
+  checks.push(
+    makeCheck(
+      'deployment-profile',
+      'passed',
+      deploymentProfile === 'target-real'
+        ? 'Production preflight is running in target-real mode.'
+        : 'Production preflight is running in rehearsal mode.',
+      { deploymentProfile }
+    )
+  );
 
   checks.push(
     nodeEnv === 'production'
@@ -136,6 +216,49 @@ export function evaluateProductionEnv(env, options = {}) {
           'Missing DATABASE_URL (or NETLIFY_DATABASE_URL on Netlify).'
         )
   );
+
+  if (deploymentProfile === 'target-real') {
+    const parsedBaseUrl = baseUrl ? new URL(baseUrl) : null;
+    checks.push(
+      !baseUrl
+        ? makeCheck(
+            'target-base-url',
+            'failed',
+            'Target-real preflight requires a real base URL.'
+          )
+        : isLocalBaseUrl(baseUrl)
+          ? makeCheck(
+              'target-base-url',
+              'failed',
+              `Target-real preflight cannot point to a local URL (${baseUrl}).`
+            )
+          : parsedBaseUrl?.protocol !== 'https:'
+            ? makeCheck(
+                'target-base-url',
+                'failed',
+                `Target-real preflight requires HTTPS, got ${parsedBaseUrl?.protocol.replace(':', '')}.`,
+                { baseUrl }
+              )
+          : makeCheck('target-base-url', 'passed', 'Target-real base URL is configured.', {
+              baseUrl,
+            })
+    );
+
+    checks.push(
+      isFileDatabaseUrl(databaseUrl)
+        ? makeCheck(
+            'database-topology',
+            'failed',
+            'Target-real preflight requires a networked production database, not sqlite/file storage.',
+            { databaseUrl }
+          )
+        : makeCheck(
+            'database-topology',
+            'passed',
+            'Database topology is compatible with target-real preflight.'
+          )
+    );
+  }
 
   checks.push(
     hasEncryptionSecret
@@ -318,10 +441,70 @@ export function evaluateProductionEnv(env, options = {}) {
     );
   }
 
+  if (deploymentProfile === 'target-real') {
+    const hasExplicitSmokeCredentials =
+      explicitEnvKeys.has('SMOKE_USER_EMAIL') && explicitEnvKeys.has('SMOKE_USER_PASSWORD');
+    checks.push(
+      hasExplicitSmokeCredentials
+        ? makeCheck(
+            'smoke-credentials-explicit',
+            'passed',
+            'Target-real preflight is using explicit smoke credentials.'
+          )
+        : makeCheck(
+            'smoke-credentials-explicit',
+            'failed',
+            'Target-real preflight requires explicit SMOKE_USER_EMAIL and SMOKE_USER_PASSWORD, not generated defaults.'
+          )
+    );
+  }
+
+  checks.push(
+    makeStorageCheck(
+      'script-storage',
+      'Script storage',
+      storageBackends.scripts,
+      deploymentProfile
+    )
+  );
+  checks.push(
+    makeStorageCheck(
+      'gallery-storage',
+      'Gallery storage',
+      storageBackends.gallery,
+      deploymentProfile
+    )
+  );
+  checks.push(
+    makeStorageCheck(
+      'package-storage',
+      'Package storage',
+      storageBackends.packages,
+      deploymentProfile
+    )
+  );
+  checks.push(
+    makeStorageCheck(
+      'asset-storage',
+      'Asset storage',
+      storageBackends.assets,
+      deploymentProfile
+    )
+  );
+  checks.push(
+    makeStorageCheck(
+      'modular-character-storage',
+      'Modular character storage',
+      storageBackends.modularCharacters,
+      deploymentProfile
+    )
+  );
+
   const summary = summarizeChecks(checks);
   return {
     ok: summary.failed === 0,
     baseUrl,
+    deploymentProfile,
     checks,
     summary,
   };
@@ -572,7 +755,11 @@ async function writeReport(reportPath, payload) {
 export async function runProductionPreflight(options = {}) {
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   const env = options.env || process.env;
-  const staticResult = evaluateProductionEnv(env, { baseUrl });
+  const staticResult = evaluateProductionEnv(env, {
+    baseUrl,
+    deploymentProfile: options.deploymentProfile,
+    explicitEnvKeys: options.explicitEnvKeys,
+  });
   const checks = [...staticResult.checks];
 
   if (baseUrl) {
@@ -616,6 +803,7 @@ export async function runProductionPreflight(options = {}) {
   const result = {
     ok: summary.failed === 0,
     baseUrl,
+    deploymentProfile: staticResult.deploymentProfile,
     generatedAt: new Date().toISOString(),
     checks,
     summary,
@@ -644,12 +832,20 @@ async function main() {
     process.env.DEPLOY_BASE_URL ||
     '';
   const skipBackupDrill = asBoolean(args.get('skip-backup-drill'), false);
+  const deploymentProfile = normalizeDeploymentProfile(args.get('deployment-profile'));
+  const envInputs = collectProductionEnvInputs({
+    root: process.cwd(),
+    env: process.env,
+    envFiles: ['.env', '.env.local', '.env.production', '.env.production.local'],
+  });
 
   const result = await runProductionPreflight({
-    env: process.env,
+    env: envInputs.merged,
     baseUrl,
     reportPath,
     skipBackupDrill,
+    deploymentProfile,
+    explicitEnvKeys: envInputs.explicitKeys,
   });
 
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

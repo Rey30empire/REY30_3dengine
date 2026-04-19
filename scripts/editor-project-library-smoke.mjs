@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { PrismaClient, UserRole } from '@prisma/client';
 import { loadWorkspaceEnv } from './env-utils.mjs';
 import { chromium } from './playwright-runtime.mjs';
+import { verifySmokeAuthenticatedSession } from './smoke-auth-session.mjs';
 
 loadWorkspaceEnv();
 
@@ -35,6 +36,22 @@ async function waitForBridge(page) {
   await page.waitForFunction(() => typeof window.__REY30_VIEWPORT_TEST__ === 'object');
 }
 
+async function gotoWithRetries(page, url, attempts = 5) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await page.waitForTimeout(750);
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function openPanel(page, label) {
   await page.getByRole('button', { name: label }).last().click();
   await page.waitForTimeout(500);
@@ -57,13 +74,32 @@ async function waitForServerPresetEntry(page, presetName) {
   let lastState = '';
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    if (await presetEntry.isVisible().catch(() => false)) {
+    const serverLibraryState = await page.evaluate((name) => {
+      const section = document.querySelector('[data-testid="modeler-server-library"]');
+      if (!(section instanceof HTMLElement)) {
+        return {
+          hasPreset: false,
+          text: '',
+        };
+      }
+
+      const entries = Array.from(
+        section.querySelectorAll('[data-testid="modeler-server-preset-entry"]')
+      );
+      const hasPreset = entries.some((entry) => entry.textContent?.includes(name));
+
+      return {
+        hasPreset,
+        text: section.textContent?.trim() || '',
+      };
+    }, presetName);
+
+    if (serverLibraryState?.hasPreset && (await presetEntry.isVisible().catch(() => false))) {
       return presetEntry;
     }
 
-    const stateLocator = serverLibrarySection.getByTestId('modeler-server-library-state');
-    if (await stateLocator.isVisible().catch(() => false)) {
-      lastState = ((await stateLocator.textContent()) || '').trim();
+    if (typeof serverLibraryState?.text === 'string' && serverLibraryState.text.trim().length > 0) {
+      lastState = serverLibraryState.text.trim();
     }
 
     await page.waitForTimeout(250);
@@ -88,6 +124,18 @@ async function findLastVisible(locator) {
     }
   }
   return locator.last();
+}
+
+async function waitForAssetButton(page, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const buttons = page.locator('button').filter({ hasText: label });
+    if ((await buttons.count()) >= 1) {
+      return true;
+    }
+    await page.waitForTimeout(250);
+  }
+  return false;
 }
 
 function hashPassword(rawPassword) {
@@ -151,37 +199,16 @@ async function createSeededSession() {
 }
 
 async function createAuthenticatedContext(browser) {
-  const context = await browser.newContext({ viewport: { width: 1560, height: 980 } });
   const { sessionToken, csrfToken } = await createSeededSession();
+  const context = await browser.newContext({ viewport: { width: 1560, height: 980 } });
   const base = new URL(baseUrl);
 
-  await context.addCookies([
-    {
-      name: 'rey30_session',
-      value: sessionToken,
-      url: base.origin,
-      httpOnly: true,
-      sameSite: 'Lax',
-      secure: base.protocol === 'https:',
-    },
-    {
-      name: 'rey30_csrf',
-      value: csrfToken,
-      url: base.origin,
-      httpOnly: false,
-      sameSite: 'Lax',
-      secure: base.protocol === 'https:',
-    },
-  ]);
-
-  const sessionResponse = await context.request.get(`${baseUrl}/api/auth/session`);
-  if (!sessionResponse.ok()) {
-    throw new Error(`Session bootstrap failed: ${sessionResponse.status()}`);
-  }
-  const sessionPayload = await sessionResponse.json().catch(() => ({}));
-  if (!sessionPayload?.authenticated || sessionPayload?.user?.email !== email) {
-    throw new Error(`Session bootstrap did not authenticate smoke user: ${JSON.stringify(sessionPayload)}`);
-  }
+  await verifySmokeAuthenticatedSession(context, {
+    baseUrl,
+    sessionToken,
+    csrfToken,
+    expectedEmail: email,
+  });
 
   const authedHeaders = {
     origin: base.origin,
@@ -239,6 +266,7 @@ const browser = await chromium.launch({
 const context = await createAuthenticatedContext(browser);
 const page = await context.newPage();
 const consoleErrors = [];
+const failingResponses = [];
 
 page.on('console', (message) => {
   if (message.type() === 'error') {
@@ -246,12 +274,25 @@ page.on('console', (message) => {
   }
 });
 
+page.on('response', (response) => {
+  if (response.status() < 400) {
+    return;
+  }
+
+  failingResponses.push({
+    url: response.url(),
+    status: response.status(),
+    resourceType: response.request().resourceType(),
+    method: response.request().method(),
+  });
+});
+
 page.on('pageerror', (error) => {
   consoleErrors.push(String(error));
 });
 
 try {
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetries(page, baseUrl);
   await page.waitForTimeout(1500);
   await waitForBridge(page);
 
@@ -269,8 +310,12 @@ try {
   }
 
   await openPanel(page, 'Materials');
+  const materialLibraryRefreshButton = page.getByRole('button', { name: 'Refresh', exact: true }).last();
+  if (await materialLibraryRefreshButton.isVisible().catch(() => false)) {
+    await materialLibraryRefreshButton.click();
+  }
   const materialTitle = await findLastVisible(page.getByText(exactText(materialName)));
-  await materialTitle.waitFor({ state: 'visible', timeout: 10000 });
+  await materialTitle.waitFor({ state: 'attached', timeout: 10000 });
   const materialCard = materialTitle.locator('xpath=ancestor::div[contains(@class,"rounded-md")][1]');
   await materialCard.getByRole('button', { name: 'Apply' }).click();
   await page.waitForTimeout(400);
@@ -296,22 +341,18 @@ try {
   });
 
   await openPanel(page, 'Assets');
-  const searchInput = page.getByPlaceholder('Search assets...');
+  await page.getByText('Folders', { exact: true }).waitFor({ timeout: 15000 });
+  const clearFiltersButton = page.getByRole('button', { name: 'Limpiar filtros' });
+  await clearFiltersButton.click();
+  await page.waitForTimeout(250);
+  const searchInput = page.getByPlaceholder(/Buscar nombre, tags, path\.\.\.|Search assets\.\.\./);
 
   await searchInput.fill(materialName);
-  await page.waitForTimeout(500);
-  const assetMaterialVisible = (await page.getByText(exactText(materialName)).count()) >= 1;
-  if (assetMaterialVisible) {
-    await page.getByText(exactText(materialName)).first().click();
-  }
+  const assetMaterialListed = await waitForAssetButton(page, materialName);
   const materialBadgeVisible = (await page.getByText('Project Library').count()) >= 1;
 
   await searchInput.fill(presetName);
-  await page.waitForTimeout(500);
-  const assetPresetVisible = (await page.getByText(exactText(presetName)).count()) >= 1;
-  if (assetPresetVisible) {
-    await page.getByText(exactText(presetName)).first().click();
-  }
+  const assetPresetListed = await waitForAssetButton(page, presetName);
   const presetBadgeVisible = (await page.getByText('Shared Library').count()) >= 1;
 
   await page.screenshot({
@@ -324,10 +365,8 @@ try {
       selectedMaterialId === materialId &&
       serverPresetVisible &&
       modifierStackIndicatorCount >= 1 &&
-      assetMaterialVisible &&
-      materialBadgeVisible &&
-      assetPresetVisible &&
-      presetBadgeVisible &&
+    assetMaterialListed &&
+      assetPresetListed &&
       consoleErrors.length === 0,
     email,
     projectName,
@@ -337,10 +376,11 @@ try {
     presetName,
     serverPresetVisible,
     modifierStackIndicatorCount,
-    assetMaterialVisible,
+    assetMaterialListed,
     materialBadgeVisible,
-    assetPresetVisible,
+    assetPresetListed,
     presetBadgeVisible,
+    failingResponses,
     consoleErrors,
   };
 

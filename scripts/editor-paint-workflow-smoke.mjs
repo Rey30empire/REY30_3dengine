@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { PrismaClient, UserRole } from '@prisma/client';
 import { loadWorkspaceEnv } from './env-utils.mjs';
 import { chromium } from './playwright-runtime.mjs';
+import { createSmokeAuthenticatedContext } from './smoke-auth-session.mjs';
 
 loadWorkspaceEnv();
 
@@ -87,39 +88,11 @@ async function createSeededSession() {
 }
 
 async function createAuthenticatedContext(browser) {
-  const context = await browser.newContext({ viewport: { width: 1560, height: 980 } });
-  const { sessionToken, csrfToken } = await createSeededSession();
-  const base = new URL(baseUrl);
-
-  await context.addCookies([
-    {
-      name: 'rey30_session',
-      value: sessionToken,
-      url: base.origin,
-      httpOnly: true,
-      sameSite: 'Lax',
-      secure: base.protocol === 'https:',
-    },
-    {
-      name: 'rey30_csrf',
-      value: csrfToken,
-      url: base.origin,
-      httpOnly: false,
-      sameSite: 'Lax',
-      secure: base.protocol === 'https:',
-    },
-  ]);
-
-  const sessionResponse = await context.request.get(`${baseUrl}/api/auth/session`);
-  if (!sessionResponse.ok()) {
-    throw new Error(`Session bootstrap failed: ${sessionResponse.status()}`);
-  }
-  const payload = await sessionResponse.json().catch(() => ({}));
-  if (!payload?.authenticated) {
-    throw new Error(`Session bootstrap did not authenticate smoke user: ${JSON.stringify(payload)}`);
-  }
-
-  return context;
+  return createSmokeAuthenticatedContext(browser, {
+    baseUrl,
+    createSeededSession,
+    expectedEmail: email,
+  });
 }
 
 async function waitForBridge(page) {
@@ -131,6 +104,11 @@ async function waitForBridge(page) {
 
 async function openPanel(page, label) {
   await page.getByRole('button', { name: label }).last().click();
+  await page.waitForTimeout(500);
+}
+
+async function selectWorkspace(page, label) {
+  await page.getByRole('button', { name: label, exact: true }).click();
   await page.waitForTimeout(500);
 }
 
@@ -178,6 +156,7 @@ try {
     throw new Error('No se pudo crear entidad para smoke de paint');
   }
 
+  await selectWorkspace(page, 'Modeling');
   await openPanel(page, 'Paint');
 
   await page.evaluate(() => {

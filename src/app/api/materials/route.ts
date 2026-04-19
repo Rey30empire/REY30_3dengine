@@ -2,6 +2,7 @@ import {
   removeAssetByPath,
   registerAssetFromPath,
 } from '@/engine/assets/pipeline';
+import { sanitizeMaterialDefinition } from '@/engine/editor/editorMaterials';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 import {
   buildProjectLibraryRelativePath,
@@ -9,7 +10,7 @@ import {
   deleteProjectLibraryEntry,
   listProjectLibraryEntries,
   normalizeProjectKey,
-  parseProjectLibraryRecord,
+  runProjectLibraryMutation,
   sanitizeLibraryName,
   writeProjectLibraryEntry,
 } from '@/lib/server/projectLibrary';
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest) {
       kind: 'material',
       projectKey,
       includeShared: true,
-      parser: parseProjectLibraryRecord,
+      parser: (value) => sanitizeMaterialDefinition(value),
     });
 
     return NextResponse.json({
@@ -61,29 +62,33 @@ export async function POST(request: NextRequest) {
     const rawName = typeof body.name === 'string' ? body.name : 'material';
     const name = sanitizeLibraryName(rawName) || 'material';
     const scope = resolveScope(body.scope);
-    if (!parseProjectLibraryRecord(body.material)) {
+    const material = sanitizeMaterialDefinition(body.material);
+    if (!material) {
       return NextResponse.json({ error: 'material is required' }, { status: 400 });
     }
-    const material = parseProjectLibraryRecord(body.material)!;
-    const saved = await writeProjectLibraryEntry({
-      kind: 'material',
-      projectKey,
-      name,
-      scope,
-      definition: material,
-    });
+    const { saved, asset } = await runProjectLibraryMutation(async () => {
+      const saved = await writeProjectLibraryEntry({
+        kind: 'material',
+        projectKey,
+        name,
+        scope,
+        definition: material,
+      });
 
-    const asset = await registerAssetFromPath({
-      absPath: saved.absolutePath,
-      name,
-      type: 'material',
-      source: 'material_editor',
-      metadata: {
-        library: true,
-        projectKey: saved.projectKey,
-        scope: saved.scope,
-        materialName: name,
-      },
+      const asset = await registerAssetFromPath({
+        absPath: saved.absolutePath,
+        name,
+        type: 'material',
+        source: 'material_editor',
+        metadata: {
+          library: true,
+          projectKey: saved.projectKey,
+          scope: saved.scope,
+          materialName: name,
+        },
+      });
+
+      return { saved, asset };
     });
 
     return NextResponse.json({
@@ -113,24 +118,31 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
     }
 
-    const deleted = await deleteProjectLibraryEntry({
-      kind: 'material',
-      projectKey,
-      name,
-      scope,
-    });
-    if (!deleted) {
-      return NextResponse.json({ error: 'Material not found' }, { status: 404 });
-    }
-
-    await removeAssetByPath({
-      relPath: buildProjectLibraryRelativePath({
+    const deleted = await runProjectLibraryMutation(async () => {
+      const deleted = await deleteProjectLibraryEntry({
         kind: 'material',
         projectKey,
         name,
         scope,
-      }),
+      });
+      if (!deleted) {
+        return false;
+      }
+
+      await removeAssetByPath({
+        relPath: buildProjectLibraryRelativePath({
+          kind: 'material',
+          projectKey,
+          name,
+          scope,
+        }),
+      });
+
+      return true;
     });
+    if (!deleted) {
+      return NextResponse.json({ error: 'Material not found' }, { status: 404 });
+    }
 
     return NextResponse.json({ success: true, projectKey, scope, name });
   } catch (error) {

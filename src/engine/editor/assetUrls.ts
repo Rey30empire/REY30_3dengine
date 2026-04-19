@@ -1,4 +1,7 @@
-export function buildAssetFileUrl(assetPath: string | null | undefined) {
+export function buildAssetFileUrl(
+  assetPath: string | null | undefined,
+  options?: { preview?: boolean }
+) {
   const raw = (assetPath ?? '').trim();
   if (!raw) {
     return '';
@@ -14,5 +17,11 @@ export function buildAssetFileUrl(assetPath: string | null | undefined) {
   }
 
   const relative = raw.replace(/^\/+/, '');
-  return `/api/assets/file?path=${encodeURIComponent(relative)}`;
+  const query = new URLSearchParams({
+    path: relative,
+  });
+  if (options?.preview) {
+    query.set('preview', '1');
+  }
+  return `/api/assets/file?${query.toString()}`;
 }

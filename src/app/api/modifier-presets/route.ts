@@ -9,6 +9,7 @@ import {
   deleteProjectLibraryEntry,
   listProjectLibraryEntries,
   normalizeProjectKey,
+  runProjectLibraryMutation,
   sanitizeLibraryName,
   writeProjectLibraryEntry,
 } from '@/lib/server/projectLibrary';
@@ -79,25 +80,29 @@ export async function POST(request: NextRequest) {
       savedAt: new Date().toISOString(),
       modifiers,
     };
-    const saved = await writeProjectLibraryEntry({
-      kind: 'modifier_preset',
-      projectKey,
-      name,
-      scope,
-      definition,
-    });
+    const { saved, asset } = await runProjectLibraryMutation(async () => {
+      const saved = await writeProjectLibraryEntry({
+        kind: 'modifier_preset',
+        projectKey,
+        name,
+        scope,
+        definition,
+      });
 
-    const asset = await registerAssetFromPath({
-      absPath: saved.absolutePath,
-      name,
-      type: 'modifier_preset',
-      source: 'modeler_panel',
-      metadata: {
-        library: true,
-        projectKey: saved.projectKey,
-        scope: saved.scope,
-        presetName: name,
-      },
+      const asset = await registerAssetFromPath({
+        absPath: saved.absolutePath,
+        name,
+        type: 'modifier_preset',
+        source: 'modeler_panel',
+        metadata: {
+          library: true,
+          projectKey: saved.projectKey,
+          scope: saved.scope,
+          presetName: name,
+        },
+      });
+
+      return { saved, asset };
     });
 
     return NextResponse.json({
@@ -127,24 +132,31 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
     }
 
-    const deleted = await deleteProjectLibraryEntry({
-      kind: 'modifier_preset',
-      projectKey,
-      name,
-      scope,
-    });
-    if (!deleted) {
-      return NextResponse.json({ error: 'Modifier preset not found' }, { status: 404 });
-    }
-
-    await removeAssetByPath({
-      relPath: buildProjectLibraryRelativePath({
+    const deleted = await runProjectLibraryMutation(async () => {
+      const deleted = await deleteProjectLibraryEntry({
         kind: 'modifier_preset',
         projectKey,
         name,
         scope,
-      }),
+      });
+      if (!deleted) {
+        return false;
+      }
+
+      await removeAssetByPath({
+        relPath: buildProjectLibraryRelativePath({
+          kind: 'modifier_preset',
+          projectKey,
+          name,
+          scope,
+        }),
+      });
+
+      return true;
     });
+    if (!deleted) {
+      return NextResponse.json({ error: 'Modifier preset not found' }, { status: 404 });
+    }
 
     return NextResponse.json({ success: true, projectKey, scope, name });
   } catch (error) {

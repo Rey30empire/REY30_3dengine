@@ -113,6 +113,7 @@ export interface EditorSlice {
   setActivePanel: (panel: string) => void;
   focusCharacterBuilderCategory: (category: string | null) => void;
   clearCharacterBuilderFocus: () => void;
+  requestLightingBake: (sceneId: string) => void;
   toggleProfiler: () => void;
   toggleConsole: () => void;
 }
@@ -125,6 +126,7 @@ export interface AISlice {
   tasks: AgentTask[];
   chatMessages: ChatMessage[];
   isAiProcessing: boolean;
+  agenticMutationIndexAudit: AgenticMutationIndexAuditState | null;
   setEngineMode: (mode: EngineWorkflowMode) => void;
   setAIMode: (mode: AIMode) => void;
   addAgent: (agent: Agent) => void;
@@ -134,7 +136,27 @@ export interface AISlice {
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
   clearChat: () => void;
   setAiProcessing: (processing: boolean) => void;
+  setAgenticMutationIndexAudit: (audit: AgenticMutationIndexAuditState | null) => void;
 }
+
+export type AgenticMutationIndexAuditState = {
+  repairCount: number;
+  checksumRepairCount?: number;
+  historyReindexedFullCount?: number;
+  historyReindexedPartialCount?: number;
+  legacyHistoryReindexedCount?: number;
+  latestRepairId: string | null;
+  latestRepairAt: string | null;
+  integrityStatus: 'valid' | 'mismatch' | 'missing';
+  integrityValid: boolean;
+  recommendationCount?: number;
+  lastIndexedExecutionId?: string | null;
+  latestIndexableExecutionId?: string | null;
+  pendingIndexableExecutionCount?: number;
+  pendingIndexableExecutionIds?: string[];
+  indexBehind?: boolean;
+  checkedAt?: string | null;
+};
 
 export interface RuntimeSlice {
   playRuntimeState: PlayRuntimeState;

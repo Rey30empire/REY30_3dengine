@@ -151,7 +151,7 @@ describe('Scripts API', () => {
       const secondPayload = await secondResponse.json();
 
       expect(secondResponse.status).toBe(409);
-      expect(String(secondPayload.error || '')).toContain('already exists');
+      expect(String(secondPayload.error || '')).toContain('Ya existe');
     });
   });
 });

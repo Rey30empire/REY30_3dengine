@@ -31,3 +31,17 @@ export {
   AnimationSystem, 
   animationSystem 
 } from './AnimationSystem';
+
+export {
+  animationRuntimeBridge,
+  AnimationRuntimeBridge,
+} from './animationRuntimeBridge';
+
+export {
+  applyAnimatorPoseToTransform,
+  compileAnimatorAuthoring,
+  createDefaultAnimatorComponentData,
+  createGeneratedAnimatorRecord,
+  evaluateCompiledAnimatorTimeline,
+  summarizeAnimatorAuthoring,
+} from './animatorAuthoring';

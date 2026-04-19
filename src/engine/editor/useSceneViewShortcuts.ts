@@ -1,6 +1,11 @@
 'use client';
 
-import { useEffect, type MutableRefObject } from 'react';
+import { useEffect, useState, type MutableRefObject } from 'react';
+import {
+  eventMatchesAnyShortcut,
+  getEditorShortcutConfig,
+  subscribeEditorShortcutConfig,
+} from '@/lib/editor-shortcuts';
 import type { GizmoMode, TransformTools } from './gizmos';
 
 export function useSceneViewShortcuts(params: {
@@ -23,65 +28,88 @@ export function useSceneViewShortcuts(params: {
     onToggleTransformSpace,
     onFocusSelected,
   } = params;
+  const [shortcutConfig, setShortcutConfig] = useState(() => getEditorShortcutConfig());
+
+  useEffect(() => {
+    const unsubscribe = subscribeEditorShortcutConfig((config) => {
+      setShortcutConfig(config);
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
+      ) {
         return;
       }
 
-      switch (e.key.toLowerCase()) {
-        case 'w':
-          setGizmoMode('translate');
-          transformToolsRef.current?.gizmo.setMode('translate');
-          break;
-        case 'e':
-          setGizmoMode('rotate');
-          transformToolsRef.current?.gizmo.setMode('rotate');
-          break;
-        case 'r':
-          setGizmoMode('scale');
-          transformToolsRef.current?.gizmo.setMode('scale');
-          break;
-        case 'q': {
-          const gizmo = transformToolsRef.current?.gizmo;
-          if (!gizmo) break;
-          const newSpace = gizmo.space === 'world' ? 'local' : 'world';
-          gizmo.setSpace(newSpace);
-          onToggleTransformSpace?.();
-          break;
-        }
-        case 'f':
-          onFocusSelected?.();
-          break;
-        case 'delete':
-        case 'backspace':
-          removeSelectedEntities();
-          break;
-        case 'escape':
-          selectEntity(null);
-          transformToolsRef.current?.gizmo.detach();
-          break;
-        case 'd':
-          if (e.ctrlKey) {
-            e.preventDefault();
-          }
-          break;
-        case 'z':
-          if (e.ctrlKey && e.shiftKey) {
-            e.preventDefault();
-            handleRedo();
-          } else if (e.ctrlKey) {
-            e.preventDefault();
-            handleUndo();
-          }
-          break;
-        case 'y':
-          if (e.ctrlKey) {
-            e.preventDefault();
-            handleRedo();
-          }
-          break;
+      if (
+        eventMatchesAnyShortcut(e, shortcutConfig['viewport.gizmo.translate'] ?? [])
+      ) {
+        e.preventDefault();
+        setGizmoMode('translate');
+        transformToolsRef.current?.gizmo.setMode('translate');
+        return;
+      }
+
+      if (eventMatchesAnyShortcut(e, shortcutConfig['viewport.gizmo.rotate'] ?? [])) {
+        e.preventDefault();
+        setGizmoMode('rotate');
+        transformToolsRef.current?.gizmo.setMode('rotate');
+        return;
+      }
+
+      if (eventMatchesAnyShortcut(e, shortcutConfig['viewport.gizmo.scale'] ?? [])) {
+        e.preventDefault();
+        setGizmoMode('scale');
+        transformToolsRef.current?.gizmo.setMode('scale');
+        return;
+      }
+
+      if (eventMatchesAnyShortcut(e, shortcutConfig['viewport.gizmo.space'] ?? [])) {
+        const gizmo = transformToolsRef.current?.gizmo;
+        if (!gizmo) return;
+        e.preventDefault();
+        const newSpace = gizmo.space === 'world' ? 'local' : 'world';
+        gizmo.setSpace(newSpace);
+        onToggleTransformSpace?.();
+        return;
+      }
+
+      if (
+        eventMatchesAnyShortcut(e, shortcutConfig['viewport.focus_selected'] ?? [])
+      ) {
+        e.preventDefault();
+        onFocusSelected?.();
+        return;
+      }
+
+      if (eventMatchesAnyShortcut(e, shortcutConfig['selection.delete'] ?? [])) {
+        e.preventDefault();
+        removeSelectedEntities();
+        return;
+      }
+
+      if (eventMatchesAnyShortcut(e, shortcutConfig['selection.clear'] ?? [])) {
+        e.preventDefault();
+        selectEntity(null);
+        transformToolsRef.current?.gizmo.detach();
+        return;
+      }
+
+      if (eventMatchesAnyShortcut(e, shortcutConfig['history.redo'] ?? [])) {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+
+      if (eventMatchesAnyShortcut(e, shortcutConfig['history.undo'] ?? [])) {
+        e.preventDefault();
+        handleUndo();
       }
     };
 
@@ -96,5 +124,6 @@ export function useSceneViewShortcuts(params: {
     transformToolsRef,
     onToggleTransformSpace,
     onFocusSelected,
+    shortcutConfig,
   ]);
 }

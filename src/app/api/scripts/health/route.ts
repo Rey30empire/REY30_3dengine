@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 import { getScriptStorageStatus } from '@/lib/server/script-storage';
+import {
+  getScriptRuntimeArtifactStorageStatus,
+  type ScriptRuntimeArtifactStorageStatus,
+} from '@/lib/server/script-runtime-artifacts';
+import { summarizeScriptRuntimeLiveSessions } from '@/lib/server/script-runtime-live-sessions';
+import { getScriptRuntimeHealthSummary } from '@/lib/server/script-runtime-semantics';
+import { getScriptRuntimePolicy } from '@/lib/security/script-runtime-policy';
 
 function isAuthError(error: unknown): boolean {
   const msg = String(error);
@@ -9,24 +16,46 @@ function isAuthError(error: unknown): boolean {
 
 export async function GET(request: NextRequest) {
   try {
-    await requireSession(request, 'VIEWER');
-    const status = await getScriptStorageStatus();
-    if (!status.available && status.error) {
-      console.error('[scripts/health][GET] unavailable:', status.error);
+    const user = await requireSession(request, 'EDITOR');
+    const currentInstanceId = new URL(request.url).searchParams.get('instanceId');
+    const policy = getScriptRuntimePolicy();
+    const [scriptStatus, runtimeArtifactStatus, live] = await Promise.all([
+      getScriptStorageStatus(),
+      policy.enabled
+        ? getScriptRuntimeArtifactStorageStatus()
+        : Promise.resolve<ScriptRuntimeArtifactStorageStatus>({
+            available: true,
+            backend: 'filesystem',
+            scope: 'filesystem',
+          }),
+      summarizeScriptRuntimeLiveSessions({
+        currentSessionId: user.sessionId,
+        currentInstanceId,
+      }).catch(() => null),
+    ]);
+    const runtime = getScriptRuntimeHealthSummary({
+      policy,
+      scriptStorage: scriptStatus,
+      runtimeArtifacts: runtimeArtifactStatus,
+    });
+    const available = runtime.restartReady;
+    if (!available) {
+      console.error('[scripts/health][GET] unavailable:', {
+        scriptStorageError: scriptStatus.available ? null : scriptStatus.error,
+        runtimeArtifactError:
+          runtimeArtifactStatus.available ? null : runtimeArtifactStatus.error,
+        runtimePolicyEnabled: policy.enabled,
+      });
     }
 
     return NextResponse.json({
-      success: status.available,
-      available: status.available,
-      backend: status.backend,
-      scope: status.scope,
-      root: status.root,
-      storeName: status.storeName,
-      message: status.available
-        ? status.backend === 'netlify-blobs'
-          ? 'Scripts API operativa con Netlify Blobs.'
-          : 'Scripts API operativa.'
-        : 'No se pudo acceder al backend de scripts.',
+      success: available,
+      available,
+      message: available
+        ? 'La automatización de scripts está disponible.'
+        : 'La automatización de scripts no está disponible en este momento.',
+      runtime,
+      live,
     });
   } catch (error) {
     if (isAuthError(error)) return authErrorToResponse(error);
@@ -35,7 +64,7 @@ export async function GET(request: NextRequest) {
       {
         success: false,
         available: false,
-        message: 'No se pudo acceder al root de scripts.',
+        message: 'La automatización de scripts no está disponible en este momento.',
       },
       { status: 200 }
     );

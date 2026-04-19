@@ -1,7 +1,14 @@
-import path from 'path';
-import ts from 'typescript';
 import { NextRequest, NextResponse } from 'next/server';
 import { getStoredScript, resolveScriptVirtualFileName } from '@/lib/server/script-storage';
+import {
+  putScriptRuntimeArtifact,
+  recordScriptRuntimeArtifactVerification,
+} from '@/lib/server/script-runtime-artifacts';
+import {
+  compileScriptRuntimeArtifact,
+  type ScriptRuntimeCompileDiagnostic,
+} from '@/lib/server/script-runtime-compiler';
+import { getScriptRuntimePolicy } from '@/lib/security/script-runtime-policy';
 import { assertValidScriptRelativePath, isInvalidScriptPathError } from '../shared';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 
@@ -10,46 +17,18 @@ interface CompileRequestBody {
   content?: string;
 }
 
-interface CompileDiagnostic {
-  category: 'error' | 'warning' | 'message' | 'suggestion';
-  code: number;
-  text: string;
-  file?: string;
-  line?: number;
-  column?: number;
-}
+const SCRIPT_COMPILE_NOT_FOUND_MESSAGE = 'El script solicitado no existe.';
+const SCRIPT_COMPILE_INPUT_REQUIRED_MESSAGE =
+  'Debes indicar la ruta o el contenido del script.';
+const SCRIPT_COMPILE_INVALID_PATH_MESSAGE = 'La ruta del script no es valida.';
+const SCRIPT_COMPILE_FAILED_MESSAGE = 'No se pudo revisar el script.';
+const SCRIPT_COMPILE_READY_SUMMARY = 'El script está listo para usarse.';
+const SCRIPT_COMPILE_REVIEW_SUMMARY = 'Se detectaron ajustes por revisar en el script.';
 
-function toCategory(category: ts.DiagnosticCategory): CompileDiagnostic['category'] {
-  switch (category) {
-    case ts.DiagnosticCategory.Error:
-      return 'error';
-    case ts.DiagnosticCategory.Warning:
-      return 'warning';
-    case ts.DiagnosticCategory.Suggestion:
-      return 'suggestion';
-    default:
-      return 'message';
-  }
-}
-
-function formatDiagnostics(diagnostics: readonly ts.Diagnostic[]): CompileDiagnostic[] {
-  return diagnostics.map((item) => {
-    const text = ts.flattenDiagnosticMessageText(item.messageText, '\n');
-    const detail: CompileDiagnostic = {
-      category: toCategory(item.category),
-      code: item.code,
-      text,
-    };
-
-    if (item.file && typeof item.start === 'number') {
-      const location = item.file.getLineAndCharacterOfPosition(item.start);
-      detail.file = path.normalize(item.file.fileName);
-      detail.line = location.line + 1;
-      detail.column = location.character + 1;
-    }
-
-    return detail;
-  });
+function summarizeDiagnostics(diagnostics: ScriptRuntimeCompileDiagnostic[]): string {
+  return diagnostics.some((item) => item.category === 'error')
+    ? SCRIPT_COMPILE_REVIEW_SUMMARY
+    : SCRIPT_COMPILE_READY_SUMMARY;
 }
 
 export async function POST(request: NextRequest) {
@@ -59,9 +38,11 @@ export async function POST(request: NextRequest) {
 
     let fileName = 'inline-script.ts';
     let sourceText = '';
+    let targetPath: string | null = null;
 
     if (body.path) {
       const normalized = assertValidScriptRelativePath(body.path);
+      targetPath = normalized;
       fileName = resolveScriptVirtualFileName(normalized);
       if (typeof body.content === 'string') {
         sourceText = body.content;
@@ -69,10 +50,7 @@ export async function POST(request: NextRequest) {
         const script = await getStoredScript(normalized);
         if (!script) {
           return NextResponse.json(
-            {
-              error: 'Script not found',
-              path: normalized,
-            },
+            { error: SCRIPT_COMPILE_NOT_FOUND_MESSAGE },
             { status: 404 }
           );
         }
@@ -83,40 +61,56 @@ export async function POST(request: NextRequest) {
     } else if (typeof body.content === 'string') {
       sourceText = body.content;
     } else {
-      return NextResponse.json({ error: 'path or content is required' }, { status: 400 });
+      return NextResponse.json(
+        { error: SCRIPT_COMPILE_INPUT_REQUIRED_MESSAGE },
+        { status: 400 }
+      );
     }
 
-    const result = ts.transpileModule(sourceText, {
-      fileName,
-      reportDiagnostics: true,
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2020,
-        module: ts.ModuleKind.ESNext,
-        moduleResolution: ts.ModuleResolutionKind.Bundler,
-        strict: true,
-        jsx: ts.JsxEmit.ReactJSX,
-        skipLibCheck: true,
-      },
+    const runtimeCompile = compileScriptRuntimeArtifact({
+      scriptId: fileName,
+      sourceText,
     });
-
-    const diagnostics = formatDiagnostics(result.diagnostics || []);
+    const diagnostics = runtimeCompile.diagnostics;
     const hasErrors = diagnostics.some((item) => item.category === 'error');
+
+    if (!hasErrors && targetPath && runtimeCompile.artifact) {
+      await putScriptRuntimeArtifact(targetPath, runtimeCompile.artifact);
+    }
+    const summary = summarizeDiagnostics(diagnostics);
+    const verification = targetPath
+      ? await recordScriptRuntimeArtifactVerification(targetPath, {
+          ok: !hasErrors,
+          message: summary,
+          verifiedAt: runtimeCompile.artifact?.generatedAt,
+        }).catch((error) => {
+          console.warn('[scripts][compile] verification history was not persisted:', error);
+          return null;
+        })
+      : null;
 
     return NextResponse.json({
       ok: !hasErrors,
-      fileName,
       diagnostics,
-      outputSize: result.outputText.length,
-      sourceSize: sourceText.length,
+      summary,
+      runtime: {
+        policy: getScriptRuntimePolicy(),
+        reviewedArtifact: !hasErrors && Boolean(runtimeCompile.artifact),
+        sourceHash: runtimeCompile.sourceHash,
+        compiledHash: runtimeCompile.artifact?.compiledHash || null,
+        generatedAt: runtimeCompile.artifact?.generatedAt || null,
+        persisted: Boolean(targetPath && !hasErrors && runtimeCompile.artifact),
+        verification,
+      },
     });
   } catch (error) {
     if (isInvalidScriptPathError(error)) {
-      return NextResponse.json({ error: 'Invalid script path' }, { status: 400 });
+      return NextResponse.json({ error: SCRIPT_COMPILE_INVALID_PATH_MESSAGE }, { status: 400 });
     }
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {
       return authErrorToResponse(error);
     }
     console.error('[scripts][compile] failed:', error);
-    return NextResponse.json({ error: 'Failed to compile script' }, { status: 500 });
+    return NextResponse.json({ error: SCRIPT_COMPILE_FAILED_MESSAGE }, { status: 500 });
   }
 }

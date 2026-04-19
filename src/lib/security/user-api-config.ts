@@ -5,6 +5,7 @@ import type { LocalAIConfig } from '@/lib/local-ai-config';
 import { DEFAULT_LOCAL_AI_CONFIG } from '@/lib/local-ai-config';
 import { db } from '@/lib/db';
 import { cloneJson, decryptText, encryptText } from './crypto';
+import { resolveEnabledLocalProviderBaseUrl } from './local-provider-policy';
 import { getSharedAccessOverridesForUserId } from './shared-access';
 
 type ProviderKey = 'openai' | 'meshy' | 'runway' | 'ollama' | 'vllm' | 'llamacpp';
@@ -72,6 +73,10 @@ function redactSecrets(config: UserScopedConfig): UserScopedConfig {
   next.localConfig.vllm.apiKey = '';
   next.localConfig.llamacpp.apiKey = '';
   return next;
+}
+
+export function toClientUserScopedConfig(config: UserScopedConfig): UserScopedConfig {
+  return redactSecrets(config);
 }
 
 function clearableSecret(secret: string | undefined): {
@@ -234,7 +239,7 @@ export async function getUserScopedConfig(userId: string): Promise<UserScopedCon
 
 export async function getUserScopedConfigForClient(userId: string): Promise<UserScopedConfig> {
   const loaded = await getUserScopedConfig(userId);
-  return redactSecrets(loaded);
+  return toClientUserScopedConfig(loaded);
 }
 
 async function upsertProviderConfig(
@@ -296,6 +301,27 @@ export async function saveUserScopedConfig(
 ): Promise<UserScopedConfig> {
   const apiConfig = cloneJson(payload.apiConfig);
   const localConfig = cloneJson(payload.localConfig);
+
+  if (localConfig.ollama.enabled) {
+    localConfig.ollama.baseUrl = resolveEnabledLocalProviderBaseUrl(
+      'ollama',
+      localConfig.ollama.baseUrl
+    );
+  }
+
+  if (localConfig.vllm.enabled) {
+    localConfig.vllm.baseUrl = resolveEnabledLocalProviderBaseUrl(
+      'vllm',
+      localConfig.vllm.baseUrl
+    );
+  }
+
+  if (localConfig.llamacpp.enabled) {
+    localConfig.llamacpp.baseUrl = resolveEnabledLocalProviderBaseUrl(
+      'llamacpp',
+      localConfig.llamacpp.baseUrl
+    );
+  }
 
   const openaiSecret = clearableSecret(apiConfig.openai.apiKey);
   const meshySecret = clearableSecret(apiConfig.meshy.apiKey);

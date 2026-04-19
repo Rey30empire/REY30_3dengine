@@ -1,37 +1,42 @@
 // ============================================
 // Character Full Package Generator (Level 3)
-// Generates mesh + UVs + textures + rig + blendshapes + base animations (mock/procedural)
+// Backend-first package generation with optional explicit local fallback for development only.
 // ============================================
 
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { registerAssetFromPath } from '@/engine/assets/pipeline';
+import {
+  isCharacterPackage,
+  summarizeCharacterPackage,
+  type CharacterAnimationClip as AnimationClip,
+  type CharacterBlendshape as Blendshape,
+  type CharacterFace as Face,
+  type CharacterMaterial,
+  type CharacterMeshData as MeshData,
+  type CharacterPackage,
+  type CharacterRigBone as RigBone,
+  type CharacterTexture,
+  type CharacterTextureKind as TextureKind,
+  type CharacterUv as UV,
+  type CharacterVec3 as Vec3,
+} from '@/lib/character-package';
+import { normalizeProjectKey } from '@/lib/project-key';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
-
-type Vec3 = { x: number; y: number; z: number };
-type Face = [number, number, number];
-type UV = { u: number; v: number };
-
-type MeshData = {
-  vertices: Vec3[];
-  faces: Face[];
-  uvs: UV[];
-  metadata: Record<string, unknown>;
-};
-
-type RigBone = { name: string; parent: string | null; position: Vec3 };
-type Blendshape = { name: string; weight: number };
-type AnimationClip = { name: string; duration: number; loop: boolean };
-
-type CharacterPackage = {
-  mesh: MeshData;
-  rig: { bones: RigBone[]; notes: string };
-  blendshapes: Blendshape[];
-  textures: Array<{ type: 'albedo' | 'normal' | 'roughness' | 'emissive'; path: string; resolution: string }>;
-  animations: AnimationClip[];
-  metadata: Record<string, unknown>;
-};
+import {
+  CharacterServiceError,
+  createCharacterJob,
+  getCharacterJobResult,
+  isCharacterBackendConfigured,
+  isCharacterLocalFallbackEnabled,
+  waitForCharacterJobCompletion,
+} from '@/lib/server/character-service';
+import {
+  getCharacterGenerationJobRecord,
+  upsertCharacterGenerationJobRecord,
+} from '@/lib/server/character-generation-store';
 
 type RequestBody = {
   prompt: string;
@@ -43,27 +48,46 @@ type RequestBody = {
   remoteJobId?: string;
 };
 
-const REMOTE_BACKEND_URL = (process.env.REY30_CHARACTER_BACKEND_URL || '').trim();
-const REMOTE_TIMEOUT_MS = Number(process.env.REY30_CHARACTER_BACKEND_TIMEOUT_MS || 120_000);
-const REMOTE_POLL_MS = Number(process.env.REY30_CHARACTER_BACKEND_POLL_MS || 1_000);
+const SENSITIVE_CHARACTER_HINTS = /(profile|backend|provider|pipeline|worker|modelo|model|engine interno|internal mode)/i;
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sanitizeStableSegment(value: string) {
+  return (
+    value
+      .trim()
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 48) || 'character'
+  );
 }
 
-async function fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
-    const data = await response.json().catch(() => ({} as Record<string, unknown>));
-    return { response, data };
-  } finally {
-    clearTimeout(timeout);
-  }
+function buildFallbackCharacterJobKey(body: RequestBody) {
+  return createHash('sha1')
+    .update(
+      JSON.stringify({
+        prompt: body.prompt,
+        style: body.style || 'realista',
+        targetEngine: body.targetEngine || 'generic',
+        includeAnimations: body.includeAnimations !== false,
+        includeBlendshapes: body.includeBlendshapes !== false,
+        references: Array.isArray(body.references) ? body.references.slice(0, 6) : [],
+      })
+    )
+    .digest('hex')
+    .slice(0, 12);
+}
+
+function toClientAsset(
+  asset: Awaited<ReturnType<typeof registerAssetFromPath>>
+) {
+  return {
+    id: asset.id,
+    name: asset.name,
+    type: asset.type,
+    path: asset.path,
+    size: asset.size,
+    createdAt: asset.createdAt,
+    metadata: asset.metadata ?? {},
+  };
 }
 
 function isVec3Array(input: unknown): input is Vec3[] {
@@ -109,10 +133,39 @@ function buildPlanarUVs(vertices: Vec3[]): UV[] {
 
 function buildDefaultTextures(): CharacterPackage['textures'] {
   return [
-    { type: 'albedo', path: 'textures/albedo_placeholder.png', resolution: '2K' },
-    { type: 'normal', path: 'textures/normal_placeholder.png', resolution: '2K' },
-    { type: 'roughness', path: 'textures/roughness_placeholder.png', resolution: '2K' },
-    { type: 'emissive', path: 'textures/emissive_placeholder.png', resolution: '1K' },
+    { type: 'albedo', path: 'textures/albedo.png', resolution: '2K' },
+    { type: 'normal', path: 'textures/normal.png', resolution: '2K' },
+    { type: 'roughness', path: 'textures/roughness.png', resolution: '2K' },
+    { type: 'metallic', path: 'textures/metallic.png', resolution: '2K' },
+    { type: 'ao', path: 'textures/ao.png', resolution: '2K' },
+    { type: 'emissive', path: 'textures/emissive.png', resolution: '1K' },
+  ];
+}
+
+function buildDefaultMaterials(): CharacterPackage['materials'] {
+  return [
+    {
+      id: 'body_primary',
+      label: 'Body',
+      domain: 'body',
+      shader: 'pbr_metal_rough',
+      doubleSided: false,
+      properties: {
+        albedoColor: '#808694',
+        roughness: 0.55,
+        metallic: 0.22,
+        aoStrength: 0.7,
+        emissiveIntensity: 0.2,
+      },
+      textureSlots: {
+        albedo: 'textures/albedo.png',
+        normal: 'textures/normal.png',
+        roughness: 'textures/roughness.png',
+        metallic: 'textures/metallic.png',
+        ao: 'textures/ao.png',
+        emissive: 'textures/emissive.png',
+      },
+    },
   ];
 }
 
@@ -221,6 +274,193 @@ function buildAnimations(include: boolean): AnimationClip[] {
   ];
 }
 
+function sanitizeVisibleText(input: unknown, fallback: string): string {
+  if (typeof input !== 'string') return fallback;
+  const trimmed = input.trim();
+  if (!trimmed || SENSITIVE_CHARACTER_HINTS.test(trimmed)) return fallback;
+  return trimmed;
+}
+
+function sanitizeMeshMetadata(input: unknown): Record<string, unknown> {
+  if (typeof input !== 'object' || input === null) return {};
+  const source = input as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+
+  if (typeof source.prompt === 'string' && source.prompt.trim()) next.prompt = source.prompt.trim();
+  if (typeof source.style === 'string' && source.style.trim()) next.style = source.style.trim();
+  if (typeof source.targetEngine === 'string' && source.targetEngine.trim()) next.targetEngine = source.targetEngine.trim();
+
+  const safeNote = sanitizeVisibleText(source.note, '');
+  if (safeNote) next.note = safeNote;
+
+  return next;
+}
+
+function sanitizePackageMetadata(
+  input: unknown,
+  base: {
+    prompt: string;
+    style: string;
+    targetEngine: string;
+    references: string[];
+  }
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {
+    prompt: base.prompt,
+    style: base.style,
+    targetEngine: base.targetEngine,
+    references: base.references,
+    generatedAt: new Date().toISOString(),
+    version: '0.2',
+  };
+
+  if (typeof input !== 'object' || input === null) {
+    return next;
+  }
+
+  const source = input as Record<string, unknown>;
+  if (typeof source.generatedAt === 'string' && source.generatedAt.trim()) {
+    next.generatedAt = source.generatedAt.trim();
+  }
+  if (typeof source.version === 'string' && source.version.trim()) {
+    next.version = source.version.trim();
+  }
+
+  return next;
+}
+
+function isSafeTexturePath(input: unknown): input is string {
+  return (
+    typeof input === 'string' &&
+    /^textures\/[a-z0-9._/-]+\.(png|jpg|jpeg|webp)$/i.test(input) &&
+    !input.includes('..')
+  );
+}
+
+function isTextureKind(input: unknown): input is TextureKind {
+  return input === 'albedo' || input === 'normal' || input === 'roughness' || input === 'metallic' || input === 'ao' || input === 'emissive';
+}
+
+function sanitizeTextures(input: unknown): CharacterPackage['textures'] {
+  if (!Array.isArray(input)) return buildDefaultTextures();
+
+  const sanitized = input
+    .map((entry) => {
+      if (typeof entry !== 'object' || entry === null) return null;
+      const source = entry as Record<string, unknown>;
+      if (!isTextureKind(source.type) || !isSafeTexturePath(source.path)) return null;
+      const resolution = typeof source.resolution === 'string' && /^[1248]K$/i.test(source.resolution.trim())
+        ? source.resolution.trim().toUpperCase()
+        : '2K';
+      return {
+        type: source.type,
+        path: source.path,
+        resolution,
+      } as CharacterTexture;
+    })
+    .filter((value): value is CharacterTexture => value !== null);
+
+  return sanitized.length > 0 ? sanitized : buildDefaultTextures();
+}
+
+function sanitizeMaterialProperties(input: unknown): Record<string, unknown> {
+  if (typeof input !== 'object' || input === null) return {};
+  const source = input as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+
+  for (const key of ['roughness', 'metallic', 'aoStrength', 'emissiveIntensity']) {
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      next[key] = value;
+    }
+  }
+
+  for (const key of ['albedoColor', 'accentColor', 'emissiveColor']) {
+    const value = source[key];
+    if (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value.trim())) {
+      next[key] = value.trim().toLowerCase();
+    }
+  }
+
+  return next;
+}
+
+function sanitizeTextureSlots(input: unknown): Partial<Record<TextureKind, string>> {
+  if (typeof input !== 'object' || input === null) return {};
+  const source = input as Record<string, unknown>;
+  const next: Partial<Record<TextureKind, string>> = {};
+
+  for (const key of ['albedo', 'normal', 'roughness', 'metallic', 'ao', 'emissive'] as TextureKind[]) {
+    if (isSafeTexturePath(source[key])) {
+      next[key] = source[key];
+    }
+  }
+
+  return next;
+}
+
+function sanitizeMaterials(input: unknown): CharacterPackage['materials'] {
+  if (!Array.isArray(input)) return buildDefaultMaterials();
+
+  const sanitized = input
+    .map((entry) => {
+      if (typeof entry !== 'object' || entry === null) return null;
+      const source = entry as Record<string, unknown>;
+      const id = typeof source.id === 'string' && /^[a-z0-9_-]{2,48}$/i.test(source.id.trim()) ? source.id.trim() : '';
+      if (!id) return null;
+      const label = typeof source.label === 'string' && source.label.trim().length > 0
+        ? sanitizeVisibleText(source.label, 'Material')
+        : 'Material';
+      const domain = typeof source.domain === 'string' && /^[a-z0-9_-]{2,32}$/i.test(source.domain.trim())
+        ? source.domain.trim()
+        : 'body';
+      const shader = typeof source.shader === 'string' && /^[a-z0-9._-]{3,32}$/i.test(source.shader.trim())
+        ? source.shader.trim()
+        : 'pbr_metal_rough';
+      const textureSlots = sanitizeTextureSlots(source.textureSlots);
+      if (Object.keys(textureSlots).length === 0) return null;
+      return {
+        id,
+        label,
+        domain,
+        shader,
+        doubleSided: source.doubleSided === true,
+        properties: sanitizeMaterialProperties(source.properties),
+        textureSlots,
+      } as CharacterMaterial;
+    })
+    .filter((value): value is CharacterMaterial => value !== null);
+
+  return sanitized.length > 0 ? sanitized : buildDefaultMaterials();
+}
+
+function buildPublicQualitySummary(
+  pkg: CharacterPackage,
+  remoteQuality?: unknown
+): Record<string, unknown> {
+  const quality: Record<string, unknown> = {
+    vertices: pkg.mesh.vertices.length,
+    triangles: pkg.mesh.faces.length,
+    rigBones: pkg.rig.bones.length,
+    blendshapes: pkg.blendshapes.length,
+    animations: pkg.animations.length,
+    materials: pkg.materials.length,
+    textureMaps: pkg.textures.length,
+    checks: ['mesh_ready', 'rig_ready', 'package_verified'],
+  };
+
+  if (typeof remoteQuality === 'object' && remoteQuality !== null) {
+    const source = remoteQuality as Record<string, unknown>;
+    for (const key of ['score', 'confidence', 'coverage']) {
+      if (typeof source[key] === 'number' && Number.isFinite(source[key] as number)) {
+        quality[key] = source[key];
+      }
+    }
+  }
+
+  return quality;
+}
+
 function normalizeRemotePackage(
   remotePayload: Record<string, unknown>,
   requestBody: RequestBody,
@@ -234,7 +474,7 @@ function normalizeRemotePackage(
 
   const remoteRig = (remotePayload.rig || {}) as Record<string, unknown>;
   const bones = Array.isArray(remoteRig.bones) ? (remoteRig.bones as RigBone[]) : buildRig();
-  const notes = typeof remoteRig.notes === 'string' ? remoteRig.notes : 'Imported from Profile A backend.';
+  const notes = sanitizeVisibleText(remoteRig.notes, 'Humanoid rig listo para integración.');
 
   const remoteBlendshapes = Array.isArray(remotePayload.blendshapes)
     ? (remotePayload.blendshapes as Blendshape[])
@@ -242,20 +482,15 @@ function normalizeRemotePackage(
   const remoteAnimations = Array.isArray(remotePayload.animations)
     ? (remotePayload.animations as AnimationClip[])
     : buildAnimations(requestBody.includeAnimations !== false);
-  const remoteTextures = Array.isArray(remotePayload.textures)
-    ? (remotePayload.textures as CharacterPackage['textures'])
-    : buildDefaultTextures();
+  const remoteTextures = sanitizeTextures(remotePayload.textures);
+  const remoteMaterials = sanitizeMaterials(remotePayload.materials);
 
   return {
     mesh: {
       vertices,
       faces,
       uvs,
-      metadata: {
-        ...((typeof remoteMesh.metadata === 'object' && remoteMesh.metadata !== null)
-          ? (remoteMesh.metadata as Record<string, unknown>)
-          : {}),
-      },
+      metadata: sanitizeMeshMetadata(remoteMesh.metadata),
     },
     rig: {
       bones,
@@ -263,170 +498,212 @@ function normalizeRemotePackage(
     },
     blendshapes: remoteBlendshapes,
     textures: remoteTextures,
+    materials: remoteMaterials,
     animations: remoteAnimations,
     metadata: {
-      prompt: requestBody.prompt,
-      style: requestBody.style || 'realista',
-      targetEngine: requestBody.targetEngine || 'generic',
-      references: Array.isArray(requestBody.references) ? requestBody.references.slice(0, 6) : [],
-      generatedAt: new Date().toISOString(),
-      version: '0.2',
-      source: 'profile-a-backend',
-      ...((typeof remotePayload.metadata === 'object' && remotePayload.metadata !== null)
-        ? (remotePayload.metadata as Record<string, unknown>)
-        : {}),
+      ...sanitizePackageMetadata(remotePayload.metadata, {
+        prompt: requestBody.prompt,
+        style: requestBody.style || 'realista',
+        targetEngine: requestBody.targetEngine || 'generic',
+        references: Array.isArray(requestBody.references) ? requestBody.references.slice(0, 6) : [],
+      }),
     },
   };
-}
-
-function normalizeRemoteError(data: Record<string, unknown>, fallback: string): string {
-  if (typeof data.error === 'string' && data.error.trim().length > 0) return data.error;
-  if (typeof data.detail === 'string' && data.detail.trim().length > 0) return data.detail;
-  return fallback;
 }
 
 async function tryGenerateWithRemoteBackend(body: RequestBody): Promise<{
+  jobId: string;
   package: CharacterPackage;
   quality: Record<string, unknown>;
+  packagePath: string;
 } | null> {
-  if (!REMOTE_BACKEND_URL) return null;
-  const base = REMOTE_BACKEND_URL.replace(/\/+$/, '');
+  if (!isCharacterBackendConfigured()) return null;
 
-  const { response: createRes, data: createData } = await fetchJsonWithTimeout(
-    `${base}/v1/character/jobs`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt: body.prompt,
-        style: body.style || 'realista',
-        targetEngine: body.targetEngine || 'generic',
-        includeAnimations: body.includeAnimations !== false,
-        includeBlendshapes: body.includeBlendshapes !== false,
-        references: Array.isArray(body.references) ? body.references.slice(0, 6) : [],
-      }),
-    },
-    15_000,
-  );
+  const job = await createCharacterJob({
+    prompt: body.prompt,
+    style: body.style || 'realista',
+    targetEngine: body.targetEngine || 'generic',
+    includeAnimations: body.includeAnimations !== false,
+    includeBlendshapes: body.includeBlendshapes !== false,
+    references: Array.isArray(body.references) ? body.references.slice(0, 6) : [],
+  });
 
-  if (!createRes.ok) {
-    const message = normalizeRemoteError(createData, 'Failed to create remote character job');
-    throw new Error(`Profile A backend rejected job: ${message}`);
-  }
-
-  const jobId = typeof createData.jobId === 'string' ? createData.jobId : '';
-  if (!jobId) {
-    throw new Error('Profile A backend returned an invalid job id');
-  }
-
-  const deadline = Date.now() + REMOTE_TIMEOUT_MS;
-  let lastStatus: Record<string, unknown> = {};
-
-  while (Date.now() < deadline) {
-    const { response: statusRes, data: statusData } = await fetchJsonWithTimeout(
-      `${base}/v1/character/jobs/${encodeURIComponent(jobId)}`,
-      { method: 'GET' },
-      10_000,
+  const finalStatus = await waitForCharacterJobCompletion(job.jobId);
+  if (finalStatus.status !== 'completed') {
+    throw new CharacterServiceError(
+      finalStatus.status === 'failed' ? 502 : 504,
+      'No se pudo completar el personaje.'
     );
-    if (!statusRes.ok) {
-      const message = normalizeRemoteError(statusData, 'Failed to poll remote character job');
-      throw new Error(`Profile A backend polling failed: ${message}`);
-    }
-    lastStatus = statusData;
-    const status = typeof statusData.status === 'string' ? statusData.status : 'unknown';
-    if (status === 'completed') {
-      break;
-    }
-    if (status === 'failed') {
-      const message =
-        typeof statusData.error === 'string' && statusData.error.trim().length > 0
-          ? statusData.error
-          : 'Remote backend marked job as failed';
-      throw new Error(`Profile A backend failed: ${message}`);
-    }
-    await sleep(REMOTE_POLL_MS);
   }
 
-  if ((lastStatus.status || '') !== 'completed') {
-    throw new Error('Profile A backend timeout waiting for character generation');
-  }
-
-  return fetchRemoteResultByJobId(jobId, body);
+  return fetchRemoteResultByJobId(job.jobId, body);
 }
 
 async function fetchRemoteResultByJobId(jobId: string, body: RequestBody): Promise<{
+  jobId: string;
   package: CharacterPackage;
   quality: Record<string, unknown>;
+  packagePath: string;
 }> {
-  const base = REMOTE_BACKEND_URL.replace(/\/+$/, '');
-
-  const { response: resultRes, data: resultData } = await fetchJsonWithTimeout(
-    `${base}/v1/character/jobs/${encodeURIComponent(jobId)}/result`,
-    { method: 'GET' },
-    10_000,
-  );
-  if (!resultRes.ok) {
-    const message = normalizeRemoteError(resultData, 'Failed to fetch remote character result');
-    throw new Error(`Profile A backend result failed: ${message}`);
-  }
-
-  const payload =
-    typeof resultData.payload === 'object' && resultData.payload !== null
-      ? (resultData.payload as Record<string, unknown>)
-      : {};
+  const result = await getCharacterJobResult(jobId);
+  const payload = result.payload;
 
   const normalizedPackage = normalizeRemotePackage(payload, body);
   const quality = {
-    vertices: normalizedPackage.mesh.vertices.length,
-    triangles: normalizedPackage.mesh.faces.length,
-    rigBones: normalizedPackage.rig.bones.length,
-    blendshapes: normalizedPackage.blendshapes.length,
-    animations: normalizedPackage.animations.length,
-    checks: ['profile_a_backend', 'procedural_mesh', 'rigged_package'],
-    ...(typeof payload.quality === 'object' && payload.quality !== null
-      ? (payload.quality as Record<string, unknown>)
-      : {}),
+    ...buildPublicQualitySummary(normalizedPackage, payload.quality),
   };
 
   return {
+    jobId,
     package: normalizedPackage,
     quality,
+    packagePath: result.packagePath,
   };
 }
 
-async function persistPackage(pkg: CharacterPackage) {
-  const root = process.env.REY30_ASSET_ROOT || path.join(process.cwd(), 'download', 'assets', 'characters');
-  const dir = path.join(root, `Character_${Date.now()}`);
-  await fs.mkdir(dir, { recursive: true });
+function isInsideRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function getRemoteBundleRoots(): string[] {
+  return [
+    process.env.REY30_CHARACTER_BACKEND_BUNDLE_ROOT,
+    path.join(process.cwd(), 'mini-services', 'character-backend', 'data', 'output'),
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => path.resolve(value));
+}
+
+async function tryCopyRemoteBundle(sourcePackagePath: string | null | undefined, destDir: string): Promise<boolean> {
+  if (!sourcePackagePath || !sourcePackagePath.trim()) return false;
+
+  const sourceAbs = path.isAbsolute(sourcePackagePath)
+    ? path.resolve(sourcePackagePath)
+    : path.resolve(process.cwd(), sourcePackagePath);
+
+  const stats = await fs.stat(sourceAbs).catch(() => null);
+  if (!stats?.isFile()) return false;
+
+  const allowed = getRemoteBundleRoots().some((root) => isInsideRoot(root, sourceAbs));
+  if (!allowed) return false;
+
+  await fs.cp(path.dirname(sourceAbs), destDir, { recursive: true, force: true });
+  return true;
+}
+
+async function writeNormalizedPackageFiles(dir: string, pkg: CharacterPackage) {
   await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2), 'utf-8');
   await fs.writeFile(path.join(dir, 'mesh.json'), JSON.stringify(pkg.mesh, null, 2), 'utf-8');
   await fs.writeFile(path.join(dir, 'rig.json'), JSON.stringify(pkg.rig, null, 2), 'utf-8');
   await fs.writeFile(path.join(dir, 'blendshapes.json'), JSON.stringify(pkg.blendshapes, null, 2), 'utf-8');
   await fs.writeFile(path.join(dir, 'animations.json'), JSON.stringify(pkg.animations, null, 2), 'utf-8');
+  await fs.writeFile(path.join(dir, 'materials.json'), JSON.stringify(pkg.materials, null, 2), 'utf-8');
+}
+
+async function persistPackage(input: {
+  pkg: CharacterPackage;
+  projectKey: string;
+  stableKey: string;
+  sourcePackagePath?: string | null;
+}) {
+  const root = process.env.REY30_ASSET_ROOT || path.join(process.cwd(), 'download', 'assets', 'characters');
+  const dir = path.join(
+    root,
+    'generated-characters',
+    sanitizeStableSegment(input.projectKey),
+    sanitizeStableSegment(input.stableKey)
+  );
+  await fs.mkdir(dir, { recursive: true });
+  await tryCopyRemoteBundle(input.sourcePackagePath, dir);
+  await writeNormalizedPackageFiles(dir, input.pkg);
   return dir;
 }
 
 export async function POST(request: NextRequest) {
   try {
-    await requireSession(request, 'EDITOR');
+    const user = await requireSession(request, 'EDITOR');
     const body = (await request.json()) as RequestBody;
     const prompt = body.prompt?.trim();
     if (!prompt) {
       return NextResponse.json({ success: false, error: 'Prompt requerido' }, { status: 400 });
     }
 
+    const projectKey = normalizeProjectKey(request.headers.get('x-rey30-project'));
     const style = body.style || 'realista';
     const targetEngine = body.targetEngine || 'generic';
     const includeAnimations = body.includeAnimations !== false;
     const includeBlendshapes = body.includeBlendshapes !== false;
     const references = Array.isArray(body.references) ? body.references.slice(0, 6) : [];
     const remoteJobId = (body.remoteJobId || '').trim();
+    const allowLocalFallback = isCharacterLocalFallbackEnabled();
+    const backendConfigured = isCharacterBackendConfigured();
+    const fallbackJobId = `fallback_${buildFallbackCharacterJobKey({
+      prompt,
+      style,
+      targetEngine,
+      includeAnimations,
+      includeBlendshapes,
+      references,
+    })}`;
 
     let pkg: CharacterPackage | null = null;
     let quality: Record<string, unknown> | null = null;
-    let source: 'profile-a-backend' | 'local-fallback' = 'local-fallback';
+    let remotePackagePath: string | null = null;
+    let finalJobId = remoteJobId || '';
 
-    if (REMOTE_BACKEND_URL && remoteJobId) {
+    if (remoteJobId) {
+      const existingRecord = await getCharacterGenerationJobRecord(remoteJobId);
+      if (existingRecord?.asset) {
+        const existingPackagePath = path.resolve(process.cwd(), existingRecord.asset.path);
+        const existingPackage = await fs
+          .readFile(existingPackagePath, 'utf-8')
+          .then((raw) => JSON.parse(raw))
+          .catch(() => null);
+
+        if (isCharacterPackage(existingPackage)) {
+          const existingQuality = existingRecord.packageSummary
+            ? {
+                vertices: existingRecord.packageSummary.vertexCount,
+                triangles: existingRecord.packageSummary.triangleCount,
+                rigBones: existingRecord.packageSummary.rigBoneCount,
+                blendshapes: existingRecord.packageSummary.blendshapeCount,
+                animations: existingRecord.packageSummary.animationCount,
+                materials: existingRecord.packageSummary.materialCount,
+                textureMaps: existingRecord.packageSummary.textureCount,
+                checks: ['mesh_ready', 'rig_ready', 'package_verified'],
+              }
+            : {};
+
+          return NextResponse.json({
+            success: true,
+            jobId: remoteJobId,
+            summary: `Personaje completo generado (${style}, ${targetEngine})`,
+            packagePath:
+              existingRecord.packageDirectoryPath ??
+              path.dirname(existingRecord.asset.path).replace(/\\/g, '/'),
+            asset: existingRecord.asset,
+            packageSummary: existingRecord.packageSummary,
+            mesh: existingPackage.mesh,
+            rig: existingPackage.rig,
+            blendshapes: existingPackage.blendshapes,
+            textures: existingPackage.textures,
+            materials: existingPackage.materials,
+            animations: existingPackage.animations,
+            quality: existingQuality,
+          });
+        }
+      }
+    }
+
+    if (!backendConfigured && !allowLocalFallback) {
+      return NextResponse.json(
+        { success: false, error: 'La creación de personajes no está disponible en esta sesión.' },
+        { status: 503 }
+      );
+    }
+
+    if (backendConfigured && remoteJobId) {
       try {
         const remoteResult = await fetchRemoteResultByJobId(remoteJobId, {
           prompt,
@@ -439,13 +716,17 @@ export async function POST(request: NextRequest) {
         });
         pkg = remoteResult.package;
         quality = remoteResult.quality;
-        source = 'profile-a-backend';
+        remotePackagePath = remoteResult.packagePath;
+        finalJobId = remoteResult.jobId;
       } catch (error) {
-        console.warn('[character/full] remote job import failed, using local fallback:', error);
+        if (!allowLocalFallback) {
+          throw error;
+        }
+        console.warn('[character/full] remote job import failed, using explicit local fallback:', error);
       }
     }
 
-    if (REMOTE_BACKEND_URL) {
+    if (backendConfigured) {
       try {
         if (!pkg) {
           const remoteResult = await tryGenerateWithRemoteBackend({
@@ -459,19 +740,31 @@ export async function POST(request: NextRequest) {
           if (remoteResult) {
             pkg = remoteResult.package;
             quality = remoteResult.quality;
-            source = 'profile-a-backend';
+            remotePackagePath = remoteResult.packagePath;
+            finalJobId = remoteResult.jobId;
           }
         }
       } catch (error) {
-        console.warn('[character/full] remote backend failed, using local fallback:', error);
+        if (!allowLocalFallback) {
+          throw error;
+        }
+        console.warn('[character/full] remote backend failed, using explicit local fallback:', error);
       }
     }
 
     if (!pkg) {
+      if (!allowLocalFallback) {
+        return NextResponse.json(
+          { success: false, error: 'No se pudo completar el personaje.' },
+          { status: 503 }
+        );
+      }
+
       const mesh = buildBaseCharacterMesh();
       const rig = buildRig();
       const blendshapes = includeBlendshapes ? buildBlendshapes() : [];
       const textures = buildDefaultTextures();
+      const materials = buildDefaultMaterials();
       const animations = buildAnimations(includeAnimations);
 
       pkg = {
@@ -479,6 +772,7 @@ export async function POST(request: NextRequest) {
         rig: { bones: rig, notes: 'Humanoid minimal rig. Requiere weight paint fino.' },
         blendshapes,
         textures,
+        materials,
         animations,
         metadata: {
           prompt,
@@ -487,7 +781,7 @@ export async function POST(request: NextRequest) {
           references,
           generatedAt: new Date().toISOString(),
           version: '0.1',
-          source: 'local-fallback',
+          mode: 'explicit_local_fallback',
         },
       };
 
@@ -497,17 +791,29 @@ export async function POST(request: NextRequest) {
         rigBones: rig.length,
         blendshapes: blendshapes.length,
         animations: animations.length,
-        checks: ['polycount < 10k', 'uvs planar', 'rig humanoid básico'],
+        materials: materials.length,
+        textureMaps: textures.length,
+        checks: ['mesh_ready', 'rig_ready', 'package_verified'],
       };
+
+      if (!finalJobId) {
+        finalJobId = fallbackJobId;
+      }
     }
 
     const finalPackage = pkg;
     const finalQuality = quality || {};
-
-    const savedDir = await persistPackage(finalPackage);
-    await registerAssetFromPath({
+    const packageSummary = summarizeCharacterPackage(finalPackage);
+    const savedDir = await persistPackage({
+      pkg: finalPackage,
+      projectKey,
+      stableKey: finalJobId || fallbackJobId,
+      sourcePackagePath: remotePackagePath,
+    });
+    const packagePath = path.relative(process.cwd(), savedDir).replace(/\\/g, '/');
+    const registeredAsset = await registerAssetFromPath({
       absPath: path.join(savedDir, 'package.json'),
-      name: `CharacterPackage_${Date.now()}`,
+      name: `CharacterPackage_${sanitizeStableSegment(finalJobId || fallbackJobId)}`,
       type: 'prefab',
       source: 'ai_level3_full_character',
       metadata: {
@@ -516,27 +822,69 @@ export async function POST(request: NextRequest) {
         targetEngine,
         references,
         generatedAt: finalPackage.metadata.generatedAt,
-        backendSource: source,
+        projectKey,
+        scope: 'project',
+        generatedBy: 'character-full-route',
+        characterPackage: true,
+        characterJobId: finalJobId || null,
+        characterPackageSummary: packageSummary,
       },
+    });
+    const clientAsset = {
+      ...toClientAsset(registeredAsset),
+      type: 'prefab' as const,
+    };
+
+    await upsertCharacterGenerationJobRecord({
+      jobId: finalJobId || fallbackJobId,
+      userId: user.id,
+      projectKey,
+      prompt,
+      style,
+      targetEngine,
+      includeAnimations,
+      includeBlendshapes,
+      references,
+      status: 'completed',
+      progress: 100,
+      stage: 'completed',
+      error: null,
+      remotePackagePath,
+      packageDirectoryPath: packagePath,
+      packageSummary,
+      asset: clientAsset,
     });
 
     return NextResponse.json({
       success: true,
-      summary: `Personaje completo generado (style=${style}, target=${targetEngine}, source=${source})`,
-      packagePath: path.relative(process.cwd(), savedDir).replace(/\\/g, '/'),
+      jobId: finalJobId || fallbackJobId,
+      summary: `Personaje completo generado (${style}, ${targetEngine})`,
+      packagePath,
+      asset: clientAsset,
+      packageSummary,
       mesh: finalPackage.mesh,
       rig: finalPackage.rig,
       blendshapes: finalPackage.blendshapes,
       textures: finalPackage.textures,
+      materials: finalPackage.materials,
       animations: finalPackage.animations,
       quality: finalQuality,
-      backendSource: source,
     });
   } catch (error) {
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {
       return authErrorToResponse(error);
     }
+    if (error instanceof CharacterServiceError) {
+      console.error('[character/full] backend failure:', error);
+      return NextResponse.json(
+        { success: false, error: 'No se pudo completar el personaje.' },
+        { status: error.status }
+      );
+    }
     console.error('Full character error', error);
-    return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: 'No se pudo generar el personaje completo.' },
+      { status: 500 }
+    );
   }
 }

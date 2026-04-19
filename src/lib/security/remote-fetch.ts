@@ -1,4 +1,9 @@
 import { isIP } from 'node:net';
+import {
+  markRemoteProviderCircuitFailure,
+  markRemoteProviderCircuitSuccess,
+  readRemoteProviderCircuitState,
+} from '@/lib/server/external-integration-store';
 
 export type RemoteProvider =
   | 'openai'
@@ -7,7 +12,8 @@ export type RemoteProvider =
   | 'ollama'
   | 'vllm'
   | 'llamacpp'
-  | 'assets';
+  | 'assets'
+  | 'webhook';
 
 export class RemoteFetchError extends Error {
   readonly code: string;
@@ -23,6 +29,10 @@ export class RemoteFetchError extends Error {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+const DEFAULT_RETRY_ATTEMPTS = 3;
+const DEFAULT_RETRY_BASE_MS = 250;
+const DEFAULT_CIRCUIT_THRESHOLD = 3;
+const DEFAULT_CIRCUIT_COOLDOWN_MS = 15_000;
 
 const DEFAULT_PROVIDER_ALLOWLIST: Record<RemoteProvider, string[]> = {
   openai: ['api.openai.com'],
@@ -32,6 +42,7 @@ const DEFAULT_PROVIDER_ALLOWLIST: Record<RemoteProvider, string[]> = {
   vllm: ['localhost', '127.0.0.1', '::1'],
   llamacpp: ['localhost', '127.0.0.1', '::1'],
   assets: [],
+  webhook: [],
 };
 
 function asPositiveInt(raw: string | undefined, fallback: number): number {
@@ -61,7 +72,29 @@ function normalizeHost(host: string): string {
   return host.trim().toLowerCase().replace(/\.$/, '');
 }
 
-function getProviderAllowlist(provider: RemoteProvider): string[] {
+function getRetryAttempts(): number {
+  return Math.max(1, asPositiveInt(process.env.REY30_REMOTE_FETCH_RETRY_ATTEMPTS, DEFAULT_RETRY_ATTEMPTS));
+}
+
+function getRetryBaseMs(): number {
+  return Math.max(50, asPositiveInt(process.env.REY30_REMOTE_FETCH_RETRY_BASE_MS, DEFAULT_RETRY_BASE_MS));
+}
+
+function getCircuitThreshold(): number {
+  return Math.max(
+    1,
+    asPositiveInt(process.env.REY30_REMOTE_FETCH_CIRCUIT_THRESHOLD, DEFAULT_CIRCUIT_THRESHOLD)
+  );
+}
+
+function getCircuitCooldownMs(): number {
+  return Math.max(
+    250,
+    asPositiveInt(process.env.REY30_REMOTE_FETCH_CIRCUIT_COOLDOWN_MS, DEFAULT_CIRCUIT_COOLDOWN_MS)
+  );
+}
+
+function getProviderAllowlist(provider: RemoteProvider, additionalAllowlist: string[] = []): string[] {
   const shared = parseAllowlist(process.env.REY30_REMOTE_FETCH_ALLOWLIST);
   const providerEnv = parseAllowlist(
     process.env[`REY30_REMOTE_FETCH_ALLOWLIST_${provider.toUpperCase()}`]
@@ -71,6 +104,7 @@ function getProviderAllowlist(provider: RemoteProvider): string[] {
       ...DEFAULT_PROVIDER_ALLOWLIST[provider].map((entry) => normalizeHost(entry)),
       ...shared.map((entry) => normalizeHost(entry)),
       ...providerEnv.map((entry) => normalizeHost(entry)),
+      ...additionalAllowlist.map((entry) => normalizeHost(entry)),
     ])
   );
 }
@@ -85,6 +119,24 @@ function hostMatchesAllowlist(host: string, allowlist: string[]): boolean {
     }
     return normalizedHost === normalizedEntry;
   });
+}
+
+export function getRemoteProviderAllowlistForDiagnostics(
+  provider: RemoteProvider,
+  additionalAllowlist: string[] = []
+): string[] {
+  return getProviderAllowlist(provider, additionalAllowlist);
+}
+
+export function isRemoteProviderHostAllowlisted(params: {
+  provider: RemoteProvider;
+  host: string;
+  additionalAllowlist?: string[];
+}): boolean {
+  return hostMatchesAllowlist(
+    params.host,
+    getProviderAllowlist(params.provider, params.additionalAllowlist || [])
+  );
 }
 
 function parseIpv4(host: string): number[] | null {
@@ -149,7 +201,48 @@ function isIpv6PrivateOrReserved(host: string): boolean {
   return false;
 }
 
-function validateRemoteUrl(url: string, provider: RemoteProvider): URL {
+function shouldRetryStatus(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function shouldRetryError(error: RemoteFetchError): boolean {
+  return (
+    error.code === 'remote_request_failed' ||
+    error.code === 'remote_timeout' ||
+    error.code === 'remote_response_too_large'
+  );
+}
+
+function parseRetryAfterMs(response: Response): number | null {
+  const raw = response.headers.get('retry-after');
+  if (!raw) return null;
+  const asNumber = Number(raw);
+  if (Number.isFinite(asNumber) && asNumber >= 0) {
+    return Math.max(0, Math.round(asNumber * 1000));
+  }
+  const parsedDate = Date.parse(raw);
+  if (Number.isFinite(parsedDate)) {
+    return Math.max(0, parsedDate - Date.now());
+  }
+  return null;
+}
+
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function assertCircuitClosed(provider: RemoteProvider, host: string) {
+  const state = readRemoteProviderCircuitState({ provider, host });
+  if (state?.openUntil && state.openUntil > Date.now()) {
+    throw new RemoteFetchError('provider_circuit_open', 'Remote provider circuit is open', 503);
+  }
+}
+
+function validateRemoteUrl(
+  url: string,
+  provider: RemoteProvider,
+  additionalAllowlist: string[] = []
+): URL {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -166,7 +259,7 @@ function validateRemoteUrl(url: string, provider: RemoteProvider): URL {
   }
 
   const host = normalizeHost(parsed.hostname);
-  const allowlist = getProviderAllowlist(provider);
+  const allowlist = getProviderAllowlist(provider, additionalAllowlist);
   if (allowlist.length === 0) {
     throw new RemoteFetchError(
       'host_allowlist_not_configured',
@@ -257,34 +350,115 @@ async function fetchRemoteBody(params: {
   init?: RequestInit;
   timeoutMs?: number;
   maxBytes?: number;
+  additionalAllowlist?: string[];
 }): Promise<{ response: Response; bytes: Uint8Array }> {
-  const parsedUrl = validateRemoteUrl(params.url, params.provider);
+  const parsedUrl = validateRemoteUrl(
+    params.url,
+    params.provider,
+    params.additionalAllowlist || []
+  );
+  const normalizedHost = normalizeHost(parsedUrl.hostname);
+  await assertCircuitClosed(params.provider, normalizedHost);
   const timeoutMs = asPositiveInt(process.env.REY30_REMOTE_FETCH_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
   const maxBytes = asPositiveInt(process.env.REY30_REMOTE_FETCH_MAX_BYTES, DEFAULT_MAX_BYTES);
+  const retryAttempts = getRetryAttempts();
+  const retryBaseMs = getRetryBaseMs();
   const effectiveTimeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : timeoutMs;
   const effectiveMaxBytes = params.maxBytes && params.maxBytes > 0 ? params.maxBytes : maxBytes;
+  const circuitThreshold = getCircuitThreshold();
+  const circuitCooldownMs = getCircuitCooldownMs();
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), effectiveTimeoutMs);
+  let lastRetryableResponseStatus: number | null = null;
+  let lastRetryableError: RemoteFetchError | null = null;
 
-  try {
-    const response = await fetch(parsedUrl.toString(), {
-      ...(params.init || {}),
-      signal: controller.signal,
-    });
-    const bytes = await readBytesWithinLimit(response, effectiveMaxBytes);
-    return { response, bytes };
-  } catch (error) {
-    if (error instanceof RemoteFetchError) {
-      throw error;
+  for (let attempt = 1; attempt <= retryAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), effectiveTimeoutMs);
+
+    try {
+      const response = await fetch(parsedUrl.toString(), {
+        ...(params.init || {}),
+        signal: controller.signal,
+      });
+      const bytes = await readBytesWithinLimit(response, effectiveMaxBytes);
+
+      if (response.ok) {
+        await markRemoteProviderCircuitSuccess({
+          provider: params.provider,
+          host: normalizedHost,
+        });
+        return { response, bytes };
+      }
+
+      if (shouldRetryStatus(response.status) && attempt < retryAttempts) {
+        lastRetryableResponseStatus = response.status;
+        const retryAfterMs = parseRetryAfterMs(response);
+        const delayMs =
+          retryAfterMs !== null
+            ? retryAfterMs
+            : retryBaseMs * Math.max(1, 2 ** (attempt - 1));
+        await sleep(delayMs);
+        continue;
+      }
+
+      if (shouldRetryStatus(response.status)) {
+        await markRemoteProviderCircuitFailure({
+          provider: params.provider,
+          host: normalizedHost,
+          threshold: circuitThreshold,
+          cooldownMs: circuitCooldownMs,
+        });
+      } else {
+        await markRemoteProviderCircuitSuccess({
+          provider: params.provider,
+          host: normalizedHost,
+        });
+      }
+
+      return { response, bytes };
+    } catch (error) {
+      let normalizedError: RemoteFetchError;
+      if (error instanceof RemoteFetchError) {
+        normalizedError = error;
+      } else if (error instanceof Error && error.name === 'AbortError') {
+        normalizedError = new RemoteFetchError('remote_timeout', 'Remote request timed out', 504);
+      } else {
+        normalizedError = new RemoteFetchError('remote_request_failed', 'Remote request failed', 502);
+      }
+
+      if (shouldRetryError(normalizedError) && attempt < retryAttempts) {
+        lastRetryableError = normalizedError;
+        const delayMs = retryBaseMs * Math.max(1, 2 ** (attempt - 1));
+        await sleep(delayMs);
+        continue;
+      }
+
+      if (shouldRetryError(normalizedError)) {
+        await markRemoteProviderCircuitFailure({
+          provider: params.provider,
+          host: normalizedHost,
+          threshold: circuitThreshold,
+          cooldownMs: circuitCooldownMs,
+        });
+      }
+
+      throw normalizedError;
+    } finally {
+      clearTimeout(timer);
     }
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new RemoteFetchError('remote_timeout', 'Remote request timed out', 504);
-    }
-    throw new RemoteFetchError('remote_request_failed', 'Remote request failed', 502);
-  } finally {
-    clearTimeout(timer);
   }
+
+  if (lastRetryableError) {
+    throw lastRetryableError;
+  }
+
+  throw new RemoteFetchError(
+    'remote_request_failed',
+    lastRetryableResponseStatus
+      ? `Remote request failed with status ${lastRetryableResponseStatus}`
+      : 'Remote request failed',
+    lastRetryableResponseStatus || 502
+  );
 }
 
 export async function fetchRemoteText(params: {
@@ -293,6 +467,7 @@ export async function fetchRemoteText(params: {
   init?: RequestInit;
   timeoutMs?: number;
   maxBytes?: number;
+  additionalAllowlist?: string[];
 }): Promise<{ response: Response; text: string }> {
   const { response, bytes } = await fetchRemoteBody(params);
   const decoder = new TextDecoder();
@@ -305,6 +480,7 @@ export async function fetchRemoteBytes(params: {
   init?: RequestInit;
   timeoutMs?: number;
   maxBytes?: number;
+  additionalAllowlist?: string[];
 }): Promise<{ response: Response; bytes: Uint8Array }> {
   return fetchRemoteBody(params);
 }
@@ -315,6 +491,7 @@ export async function fetchRemoteJson<T = Record<string, unknown>>(params: {
   init?: RequestInit;
   timeoutMs?: number;
   maxBytes?: number;
+  additionalAllowlist?: string[];
 }): Promise<{ response: Response; data: T | null; rawText: string }> {
   const { response, text } = await fetchRemoteText(params);
   if (!text.trim()) {

@@ -73,6 +73,17 @@ NPM scripts:
 - `backup:verify:remote`
 - `backup:restore:dryrun:remote`
 
+Restore real controlado en staging:
+
+```bash
+node scripts/ops-backup-client.mjs restore-real \
+  --base-url "$STAGING_BASE_URL" \
+  --ops-token "$REY30_OPS_TOKEN" \
+  --backup-id "<backup_id>" \
+  --confirm RESTORE_NOW \
+  --report-path output/staging-restore-real.json
+```
+
 ## Automatización programada
 
 Workflow:

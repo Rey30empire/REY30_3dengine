@@ -1,0 +1,17 @@
+export const AGENTIC_TRACE_EVENTS = {
+  INTENT_PARSED: 'intent.parsed',
+  PLAN_CREATED: 'plan.created',
+  AGENT_ASSIGNED: 'agent.assigned',
+  TOOL_CALLED: 'tool.called',
+  TOOL_COMPLETED: 'tool.completed',
+  TOOL_FAILED: 'tool.failed',
+  STEP_STARTED: 'step.started',
+  STEP_COMPLETED: 'step.completed',
+  STEP_FAILED: 'step.failed',
+  VALIDATION_STARTED: 'validation.started',
+  VALIDATION_APPROVED: 'validation.approved',
+  VALIDATION_REJECTED: 'validation.rejected',
+  REPLAN_CREATED: 'replan.created',
+  PIPELINE_COMPLETED: 'pipeline.completed',
+  PIPELINE_FAILED: 'pipeline.failed',
+} as const;

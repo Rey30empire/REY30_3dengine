@@ -11,15 +11,15 @@ export function trustProxyEnabled(): boolean {
 }
 
 export function getClientIp(request: NextRequest): string | null {
-  const realIp = request.headers.get('x-real-ip')?.trim() || '';
   if (trustProxyEnabled()) {
     const forwarded = request.headers.get('x-forwarded-for');
     if (forwarded) {
       const first = forwarded.split(',')[0]?.trim() || '';
       if (first) return first;
     }
+    const realIp = request.headers.get('x-real-ip')?.trim() || '';
     return realIp || null;
   }
 
-  return realIp || null;
+  return null;
 }

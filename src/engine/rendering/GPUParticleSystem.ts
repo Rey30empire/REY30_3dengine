@@ -1129,6 +1129,16 @@ export class GPUParticleSystem {
   getStats(): ParticleStats {
     return { ...this.stats };
   }
+
+  isReady(): boolean {
+    return Boolean(
+      this.gpuCompute &&
+        this.positionVariable &&
+        this.velocityVariable &&
+        this.particleMaterial &&
+        this.particleMesh
+    );
+  }
   
   dispose(): void {
     // Dispose all emitters

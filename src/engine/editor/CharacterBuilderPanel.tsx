@@ -253,6 +253,7 @@ export function CharacterBuilderPanel() {
   );
   const builderRef = useRef<CharacterLibraryBuilder | null>(null);
   const dragPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const equippedSlotRefs = useRef<
     Partial<Record<CharacterPartCategory, HTMLDivElement | null>>
   >({});
@@ -416,6 +417,21 @@ export function CharacterBuilderPanel() {
   const onPreviewPointerUp = () => {
     dragPointerRef.current = null;
   };
+
+  const onPreviewWheel = useCallback((event: WheelEvent) => {
+    event.preventDefault();
+    const builder = builderRef.current;
+    if (!builder) return;
+    setSnapshot(builder.zoomPreview(event.deltaY > 0 ? 0.16 : -0.16));
+  }, []);
+
+  useEffect(() => {
+    const previewViewport = previewViewportRef.current;
+    if (!previewViewport) return;
+
+    previewViewport.addEventListener('wheel', onPreviewWheel, { passive: false });
+    return () => previewViewport.removeEventListener('wheel', onPreviewWheel);
+  }, [onPreviewWheel]);
 
   const previewModels = useMemo<PreviewModelSpec[]>(() => {
     return CHARACTER_PART_CATEGORIES.reduce<PreviewModelSpec[]>((acc, category) => {
@@ -891,17 +907,12 @@ export function CharacterBuilderPanel() {
 
         <div className="space-y-3 p-3">
           <div
+            ref={previewViewportRef}
             className="relative h-80 overflow-hidden rounded-xl border border-slate-800 bg-slate-950"
             onPointerDown={onPreviewPointerDown}
             onPointerMove={onPreviewPointerMove}
             onPointerUp={onPreviewPointerUp}
             onPointerLeave={onPreviewPointerUp}
-            onWheel={(event) => {
-              event.preventDefault();
-              const builder = builderRef.current;
-              if (!builder) return;
-              setSnapshot(builder.zoomPreview(event.deltaY > 0 ? 0.16 : -0.16));
-            }}
           >
             {previewModels.length > 0 ? (
               <CharacterPreviewCanvas
@@ -1086,8 +1097,8 @@ export function CharacterBuilderPanel() {
             <CardHeader className="px-4">
               <CardTitle className="text-sm">Presets JSON</CardTitle>
               <CardDescription className="text-[11px] text-slate-500">
-                Guardado local serializado como JSON. El adaptador actual lo deja listo para mover
-                a backend o filesystem despues.
+                Guardado persistente por proyecto cuando el backend esta disponible, con fallback
+                local para mantener compatibilidad temporal.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 px-4">

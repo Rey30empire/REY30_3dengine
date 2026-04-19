@@ -1,8 +1,12 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { getAssetRoot } from '@/engine/assets/pipeline';
+import {
+  normalizeProjectKey as normalizeProjectKeyValue,
+  sanitizeProjectKeySegment,
+} from '@/lib/project-key';
 
-export type ProjectLibraryKind = 'material' | 'modifier_preset';
+export type ProjectLibraryKind = 'material' | 'modifier_preset' | 'character_preset';
 export type ProjectLibraryScope = 'project' | 'shared';
 
 export interface ProjectLibraryEntry<TDefinition> {
@@ -13,17 +17,18 @@ export interface ProjectLibraryEntry<TDefinition> {
   definition: TDefinition;
 }
 
+let projectLibraryMutationQueue: Promise<void> = Promise.resolve();
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function sanitizeLibraryName(value: string) {
-  return value.trim().replace(/[^a-zA-Z0-9_\-]/g, '_');
+  return sanitizeProjectKeySegment(value);
 }
 
 export function normalizeProjectKey(value: string | null | undefined) {
-  const sanitized = sanitizeLibraryName(value || 'untitled_project').toLowerCase();
-  return sanitized.length > 0 ? sanitized : 'untitled_project';
+  return normalizeProjectKeyValue(value);
 }
 
 function getKindRoot(kind: ProjectLibraryKind) {
@@ -57,6 +62,39 @@ export function buildProjectLibraryRelativePath(params: {
     `${safeName}.json`
   );
   return path.relative(process.cwd(), absolutePath).replace(/\\/g, '/');
+}
+
+export function runProjectLibraryMutation<T>(work: () => Promise<T>): Promise<T> {
+  const next = projectLibraryMutationQueue.then(work, work);
+  projectLibraryMutationQueue = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
+
+function createAtomicTempPath(targetPath: string) {
+  const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2, 10)}`;
+  return path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${suffix}.tmp`);
+}
+
+async function writeJsonAtomic(targetPath: string, value: unknown) {
+  const tempPath = createAtomicTempPath(targetPath);
+  const payload = JSON.stringify(value, null, 2);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(tempPath, payload, 'utf-8');
+  try {
+    await fs.rename(tempPath, targetPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'EEXIST' || code === 'EPERM' || code === 'ENOTEMPTY') {
+      await fs.rm(targetPath, { force: true }).catch(() => undefined);
+      await fs.rename(tempPath, targetPath);
+      return;
+    }
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readLibraryFiles<TDefinition>(params: {
@@ -94,6 +132,44 @@ async function readLibraryFiles<TDefinition>(params: {
     return results.flatMap((entry) => (entry ? [entry] : []));
   } catch {
     return [];
+  }
+}
+
+export async function readProjectLibraryEntry<TDefinition>(params: {
+  kind: ProjectLibraryKind;
+  projectKey: string;
+  name: string;
+  parser: (value: unknown) => TDefinition | null;
+  scope?: ProjectLibraryScope;
+}) {
+  const normalizedProjectKey = normalizeProjectKey(params.projectKey);
+  const scope = params.scope ?? 'project';
+  const safeName = sanitizeLibraryName(params.name);
+  if (!safeName) {
+    return null;
+  }
+
+  const absolutePath = path.join(
+    getScopeRoot(params.kind, normalizedProjectKey, scope),
+    `${safeName}.json`
+  );
+
+  try {
+    const raw = await fs.readFile(absolutePath, 'utf-8');
+    const definition = params.parser(JSON.parse(raw));
+    if (!definition) {
+      return null;
+    }
+
+    return {
+      name: safeName,
+      path: path.relative(process.cwd(), absolutePath).replace(/\\/g, '/'),
+      projectKey: scope === 'shared' ? 'shared' : normalizedProjectKey,
+      scope,
+      definition,
+    } satisfies ProjectLibraryEntry<TDefinition>;
+  } catch {
+    return null;
   }
 }
 
@@ -143,7 +219,7 @@ export async function writeProjectLibraryEntry<TDefinition>(params: {
   const dir = getScopeRoot(params.kind, normalizedProjectKey, scope);
   const absolutePath = path.join(dir, `${safeName}.json`);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(absolutePath, JSON.stringify(params.definition, null, 2), 'utf-8');
+  await writeJsonAtomic(absolutePath, params.definition);
   return {
     name: safeName,
     projectKey: scope === 'shared' ? 'shared' : normalizedProjectKey,

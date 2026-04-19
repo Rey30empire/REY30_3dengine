@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAssetRoot, registerAssetFromPath } from '@/engine/assets/pipeline';
+import { MATERIAL_TEXTURE_SLOTS } from '@/engine/editor/editorMaterials';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
 import { normalizeProjectKey, sanitizeLibraryName } from '@/lib/server/projectLibrary';
 
@@ -12,6 +13,13 @@ function sanitizeFileStem(value: string, fallback: string) {
 
 function resolveProjectKey(request: NextRequest) {
   return normalizeProjectKey(request.headers.get('x-rey30-project'));
+}
+
+function resolveSlot(value: FormDataEntryValue | null) {
+  const slot = String(value || 'albedo').trim() || 'albedo';
+  return MATERIAL_TEXTURE_SLOTS.includes(slot as (typeof MATERIAL_TEXTURE_SLOTS)[number])
+    ? slot
+    : null;
 }
 
 function resolveExtension(file: File) {
@@ -27,13 +35,21 @@ export async function POST(request: NextRequest) {
 
     const formData = await request.formData();
     const file = formData.get('file');
-    const slot = String(formData.get('slot') || 'albedo').trim() || 'albedo';
+    const slot = resolveSlot(formData.get('slot'));
     const entityName = String(formData.get('entityName') || 'Entity').trim() || 'Entity';
+    const entityId = sanitizeFileStem(String(formData.get('entityId') || '').trim(), 'entity');
     const requestedName = String(formData.get('name') || '').trim();
+    const resolution = Math.max(
+      128,
+      Math.min(4096, Number.parseInt(String(formData.get('resolution') || '1024'), 10) || 1024)
+    );
     const projectKey = resolveProjectKey(request);
 
     if (!(file instanceof File) || file.size <= 0) {
       return NextResponse.json({ error: 'file is required' }, { status: 400 });
+    }
+    if (!slot) {
+      return NextResponse.json({ error: 'slot is invalid' }, { status: 400 });
     }
 
     const assetRoot = getAssetRoot();
@@ -45,7 +61,7 @@ export async function POST(request: NextRequest) {
       'paint_texture'
     );
     const ext = resolveExtension(file);
-    const fileName = `${baseName}_${Date.now()}${ext}`;
+    const fileName = `${entityId}__${slot}${ext}`;
     const absolutePath = path.join(dir, fileName);
     const buffer = Buffer.from(await file.arrayBuffer());
     await fs.writeFile(absolutePath, buffer);
@@ -58,8 +74,11 @@ export async function POST(request: NextRequest) {
       metadata: {
         texturePaint: true,
         slot,
+        entityId,
         entityName,
         projectKey,
+        resolution,
+        stableKey: `${projectKey}:${entityId}:${slot}`,
         mimeType: file.type || null,
       },
     });

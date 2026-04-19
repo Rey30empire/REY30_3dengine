@@ -11,6 +11,7 @@ export const createDefaultEditorState = (): EditorState => ({
   selectedEntities: [],
   selectedAsset: null,
   characterBuilderFocusRequest: null,
+  lightingBakeRequest: null,
   tool: 'select',
   mode: 'scene',
   gridVisible: true,

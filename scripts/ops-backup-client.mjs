@@ -94,8 +94,17 @@ async function main() {
         dryRun: true,
       });
       break;
+    case 'restore':
+    case 'restore-real':
+      payload = await callJson(baseUrl, '/api/ops/backups/restore', 'POST', opsToken, {
+        backupId: args.get('backup-id') || '',
+        dryRun: false,
+        confirm: args.get('confirm') || process.env.RESTORE_CONFIRM || '',
+        skipVerify: args.get('skip-verify') === 'true',
+      });
+      break;
     default:
-      throw new Error(`Unknown command "${command}". Use create|list|verify|restore-dry-run`);
+      throw new Error(`Unknown command "${command}". Use create|list|verify|restore-dry-run|restore-real`);
   }
 
   await writeReport(reportPath, payload);

@@ -2,10 +2,13 @@ import crypto from 'crypto';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import {
+  persistDurableSecurityAuditLog,
+} from '@/lib/server/external-integration-store';
 import { hashToken, isMissingEncryptionSecretError } from './crypto';
 import { getClientIp } from './client-ip';
 import { applyCsrfCookie, clearCsrfCookie } from './csrf';
-import { resolveSharedAccessUserFromRequest } from './shared-access';
+import { isSharedAccessUserEmail, resolveSharedAccessUserFromRequest } from './shared-access';
 import type { AppUserRole } from './user-roles';
 
 export const SESSION_COOKIE_NAME = 'rey30_session';
@@ -35,6 +38,22 @@ export type SessionUser = AuthUser & {
   sessionId: string;
 };
 
+function getEffectiveSessionRole(user: Pick<AuthUser, 'email' | 'role'>): AppUserRole {
+  return isSharedAccessUserEmail(user.email) ? 'VIEWER' : user.role;
+}
+
+function normalizeBooleanEnv(value: string | undefined, defaultValue = false): boolean {
+  const normalized = (value || '').trim().toLowerCase();
+  if (!normalized) return defaultValue;
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return defaultValue;
+}
+
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase();
   if (!normalized) return false;
@@ -53,6 +72,66 @@ export function shouldGrantLocalDevOwner(request: NextRequest): boolean {
   return raw !== 'false';
 }
 
+export function isLocalOwnerModeEnabled(request?: NextRequest): boolean {
+  if (!normalizeBooleanEnv(process.env.REY30_LOCAL_OWNER_MODE, false)) {
+    return false;
+  }
+
+  if (!request) {
+    return true;
+  }
+
+  if (normalizeBooleanEnv(process.env.REY30_LOCAL_OWNER_ALLOW_REMOTE, false)) {
+    return true;
+  }
+
+  return isLocalRequest(request);
+}
+
+export function getLocalOwnerIdentity() {
+  return {
+    email: (process.env.REY30_LOCAL_OWNER_EMAIL || 'owner@rey30.local').trim().toLowerCase(),
+    name: (process.env.REY30_LOCAL_OWNER_NAME || 'REY30 Local Owner').trim() || 'REY30 Local Owner',
+  };
+}
+
+export async function ensureLocalOwnerUser(options: { touchLastLogin?: boolean } = {}): Promise<AuthUser> {
+  const { email, name } = getLocalOwnerIdentity();
+  const touchLastLogin = options.touchLastLogin === true;
+  const now = new Date();
+  const record = await db.user.upsert({
+    where: { email },
+    create: {
+      email,
+      name,
+      role: 'OWNER',
+      isActive: true,
+      ...(touchLastLogin ? { lastLoginAt: now } : {}),
+    },
+    update: {
+      role: 'OWNER',
+      isActive: true,
+      name,
+      ...(touchLastLogin ? { lastLoginAt: now } : {}),
+    },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      isActive: true,
+    },
+  });
+
+  return {
+    id: record.id,
+    email: record.email,
+    name: record.name,
+    role: record.role,
+    isActive: record.isActive,
+  };
+}
+
 function nowPlusDays(days: number): Date {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
 }
@@ -64,7 +143,12 @@ export async function logSecurityEvent(params: {
   target?: string | null;
   status: 'allowed' | 'denied' | 'error';
   metadata?: Record<string, unknown> | null;
+  durability?: 'best_effort' | 'critical';
 }): Promise<void> {
+  const metadata = params.metadata ? JSON.stringify(params.metadata) : null;
+  const ipAddress = params.request ? getClientIp(params.request) : null;
+  const userAgent = params.request?.headers.get('user-agent') || null;
+
   try {
     await db.securityAuditLog.create({
       data: {
@@ -72,12 +156,39 @@ export async function logSecurityEvent(params: {
         action: params.action,
         target: params.target || null,
         status: params.status,
-        ipAddress: params.request ? getClientIp(params.request) : null,
-        userAgent: params.request?.headers.get('user-agent') || null,
-        metadata: params.metadata ? JSON.stringify(params.metadata) : null,
+        ipAddress,
+        userAgent,
+        metadata,
       },
     });
   } catch (error) {
+    if (params.durability === 'critical') {
+      try {
+        await persistDurableSecurityAuditLog({
+          userId: params.userId || null,
+          action: params.action,
+          target: params.target || null,
+          status: params.status,
+          ipAddress,
+          userAgent,
+          metadata,
+        });
+        console.warn('[security] audit log persisted via durable fallback', {
+          action: params.action,
+          status: params.status,
+        });
+        return;
+      } catch (fallbackError) {
+        console.warn('[security] failed to write audit log and durable fallback', {
+          error,
+          fallbackError,
+          action: params.action,
+          status: params.status,
+        });
+        return;
+      }
+    }
+
     console.warn('[security] failed to write audit log', error);
   }
 }
@@ -162,7 +273,7 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser 
           id: session.user.id,
           email: session.user.email,
           name: session.user.name,
-          role: session.user.role,
+          role: getEffectiveSessionRole(session.user),
           isActive: session.user.isActive,
           sessionId: session.id,
         };
@@ -175,6 +286,7 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser 
 
   return {
     ...sharedUser,
+    role: getEffectiveSessionRole(sharedUser),
     sessionId: 'shared-access',
   };
 }

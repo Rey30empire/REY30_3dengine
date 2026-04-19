@@ -366,6 +366,24 @@ export const createEditorSlice: SliceCreator<EditorSlice> = (set) => ({
       },
     })),
 
+  requestLightingBake: (sceneId) =>
+    set((state) => {
+      const normalizedSceneId = sceneId.trim();
+      if (!normalizedSceneId) {
+        return {};
+      }
+
+      return {
+        editor: {
+          ...state.editor,
+          lightingBakeRequest: {
+            sceneId: normalizedSceneId,
+            token: (state.editor.lightingBakeRequest?.token ?? 0) + 1,
+          },
+        },
+      };
+    }),
+
   toggleProfiler: () =>
     set((state) => ({
       showProfiler: !state.showProfiler,

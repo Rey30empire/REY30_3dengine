@@ -11,15 +11,15 @@ export function getWorkflowPresentation(engineMode: EngineWorkflowMode) {
       : 'AI First';
 
   const modeDescription = isManualWorkflow
-    ? 'Solo guía textual. La creación/edición se hace desde Scene + Scrib Studio manual.'
+    ? 'Trabajas con control directo sobre la escena y los ajustes.'
     : engineMode === 'MODE_HYBRID'
-      ? 'La IA genera la base y tú iteras manifest/config/código en Scrib Studio.'
-      : 'Prompt único. El orquestador ejecuta pipeline completo sobre Scene + Entities + Scribs.';
+      ? 'La IA prepara una primera versión y tú la refinas.'
+      : 'Describe lo que quieres y la app lo construye por ti.';
 
   const inputPlaceholder = isManualWorkflow
     ? 'Modo manual: crea/edita desde Scrib Studio'
     : isAIFirstWorkflow
-      ? 'Prompt único (ej: crea un juego survival en desierto)'
+      ? 'Describe tu juego o escena ideal'
       : 'Describe lo que quieres crear...';
 
   return {

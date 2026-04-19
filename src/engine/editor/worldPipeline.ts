@@ -1,10 +1,19 @@
 import * as THREE from 'three';
 import type {
+  AdvancedLightingSettingsInput,
   Color,
   EnvironmentSettings,
   ToneMappingMode,
 } from '@/types/engine';
+import { resolveAdvancedLightingSettings } from '@/types/engine';
 import { buildAssetFileUrl } from './assetUrls';
+import {
+  getShadowMapSizeForQuality,
+  getShadowRadiusForQuality,
+  resolveSceneRenderProfile,
+  resolveShadowQualityMode,
+  resolveToneMappingMode,
+} from '@/engine/rendering/renderEnvironmentProfile';
 
 export const WORLD_SKY_ASSET_PREFIX = 'asset:';
 
@@ -59,6 +68,7 @@ type WorldLookPreset = {
   directionalLightIntensity?: number;
   directionalLightAzimuth?: number;
   directionalLightElevation?: number;
+  advancedLighting?: AdvancedLightingSettingsInput;
   fog?: EnvironmentSettings['fog'];
   postProcessing?: {
     bloom?: Partial<EnvironmentSettings['postProcessing']['bloom']>;
@@ -81,6 +91,11 @@ export const WORLD_LOOK_PRESETS = {
     directionalLightIntensity: 1.15,
     directionalLightAzimuth: 42,
     directionalLightElevation: 56,
+    advancedLighting: {
+      shadowQuality: 'medium',
+      globalIllumination: { enabled: false, intensity: 0.9, bounceCount: 1 },
+      bakedLightmaps: { enabled: false },
+    },
     fog: null,
     postProcessing: {
       bloom: { enabled: false, intensity: 0.3, threshold: 0.9, radius: 0.25 },
@@ -109,6 +124,11 @@ export const WORLD_LOOK_PRESETS = {
     directionalLightIntensity: 1.05,
     directionalLightAzimuth: 34,
     directionalLightElevation: 62,
+    advancedLighting: {
+      shadowQuality: 'high',
+      globalIllumination: { enabled: true, intensity: 0.85, bounceCount: 1 },
+      bakedLightmaps: { enabled: false },
+    },
     fog: null,
     postProcessing: {
       bloom: { enabled: true, intensity: 0.32, threshold: 0.84, radius: 0.28 },
@@ -137,6 +157,11 @@ export const WORLD_LOOK_PRESETS = {
     directionalLightIntensity: 1.72,
     directionalLightAzimuth: 28,
     directionalLightElevation: 24,
+    advancedLighting: {
+      shadowQuality: 'high',
+      globalIllumination: { enabled: true, intensity: 1.02, bounceCount: 2 },
+      bakedLightmaps: { enabled: false },
+    },
     fog: {
       enabled: true,
       type: 'exponential',
@@ -170,6 +195,11 @@ export const WORLD_LOOK_PRESETS = {
     directionalLightIntensity: 1.85,
     directionalLightAzimuth: 126,
     directionalLightElevation: 31,
+    advancedLighting: {
+      shadowQuality: 'ultra',
+      globalIllumination: { enabled: true, intensity: 1.12, bounceCount: 2 },
+      bakedLightmaps: { enabled: false },
+    },
     fog: {
       enabled: true,
       type: 'exponential',
@@ -248,6 +278,21 @@ export function applyWorldLookPreset(
 ): EnvironmentSettings {
   const preset = WORLD_LOOK_PRESETS[presetName];
   const keepAssetSkybox = isWorldSkyAsset(environment.skybox) && preset.skybox;
+  const currentAdvancedLighting = resolveAdvancedLightingSettings(
+    environment.advancedLighting
+  );
+  const nextAdvancedLighting = resolveAdvancedLightingSettings({
+    ...currentAdvancedLighting,
+    ...preset.advancedLighting,
+    globalIllumination: {
+      ...currentAdvancedLighting.globalIllumination,
+      ...preset.advancedLighting?.globalIllumination,
+    },
+    bakedLightmaps: {
+      ...currentAdvancedLighting.bakedLightmaps,
+      ...preset.advancedLighting?.bakedLightmaps,
+    },
+  });
 
   return {
     ...environment,
@@ -262,6 +307,7 @@ export function applyWorldLookPreset(
       preset.directionalLightAzimuth ?? environment.directionalLightAzimuth,
     directionalLightElevation:
       preset.directionalLightElevation ?? environment.directionalLightElevation,
+    advancedLighting: nextAdvancedLighting,
     fog: preset.fog === undefined ? environment.fog : preset.fog,
     postProcessing: {
       ...environment.postProcessing,
@@ -289,17 +335,10 @@ export function applyWorldLookPreset(
   };
 }
 
-export function resolveToneMapping(value: ToneMappingMode | null | undefined): ToneMappingMode {
-  switch (value) {
-    case 'none':
-    case 'linear':
-    case 'reinhard':
-    case 'cineon':
-    case 'aces':
-      return value;
-    default:
-      return 'aces';
-  }
+export { getShadowMapSizeForQuality, getShadowRadiusForQuality, resolveSceneRenderProfile };
+
+export function resolveToneMapping(value: Parameters<typeof resolveToneMappingMode>[0]) {
+  return resolveToneMappingMode(value);
 }
 
 export function getThreeToneMapping(mode: ToneMappingMode | null | undefined) {
@@ -316,6 +355,10 @@ export function getThreeToneMapping(mode: ToneMappingMode | null | undefined) {
     default:
       return THREE.ACESFilmicToneMapping;
   }
+}
+
+export function resolveShadowQuality(value: Parameters<typeof resolveShadowQualityMode>[0]) {
+  return resolveShadowQualityMode(value);
 }
 
 export function computeDirectionalLightPosition(

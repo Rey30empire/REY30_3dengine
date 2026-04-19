@@ -127,6 +127,151 @@ function isShadowCapableLight(light: THREE.Object3D): light is ShadowCapableLigh
     light instanceof THREE.PointLight;
 }
 
+type LightMapCapableMaterial = THREE.Material & {
+  lightMap?: THREE.Texture | null;
+  lightMapIntensity?: number;
+  needsUpdate: boolean;
+  userData: Record<string, unknown>;
+};
+
+function isLightMapCapableMaterial(material: THREE.Material): material is LightMapCapableMaterial {
+  return 'lightMap' in material;
+}
+
+function collectSceneLights(scene: THREE.Scene): THREE.Light[] {
+  const lights: THREE.Light[] = [];
+  scene.traverse((object) => {
+    if (object instanceof THREE.Light && object.visible) {
+      lights.push(object);
+    }
+  });
+  return lights;
+}
+
+function computeMeshCenter(mesh: THREE.Mesh): THREE.Vector3 {
+  const box = new THREE.Box3().setFromObject(mesh);
+  if (!box.isEmpty()) {
+    return box.getCenter(new THREE.Vector3());
+  }
+  return mesh.getWorldPosition(new THREE.Vector3());
+}
+
+function ensureUv2(geometry: THREE.BufferGeometry): boolean {
+  if (geometry.getAttribute('uv2')) {
+    return false;
+  }
+
+  const uv = geometry.getAttribute('uv');
+  if (uv && uv.itemSize >= 2) {
+    geometry.setAttribute('uv2', uv.clone());
+    return true;
+  }
+
+  const position = geometry.getAttribute('position');
+  if (!position) {
+    return false;
+  }
+
+  if (!geometry.boundingBox) {
+    geometry.computeBoundingBox();
+  }
+  const box = geometry.boundingBox?.clone();
+  if (!box) {
+    return false;
+  }
+
+  const size = box.getSize(new THREE.Vector3());
+  const min = box.min.clone();
+  const spanX = size.x || 1;
+  const spanZ = size.z || 1;
+  const values = new Float32Array(position.count * 2);
+
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const z = position.getZ(i);
+    values[i * 2] = (x - min.x) / spanX;
+    values[i * 2 + 1] = (z - min.z) / spanZ;
+  }
+
+  geometry.setAttribute('uv', new THREE.BufferAttribute(values.slice(0), 2));
+  geometry.setAttribute('uv2', new THREE.BufferAttribute(values, 2));
+  return true;
+}
+
+function pseudoNormalFromUv(u: number, v: number): THREE.Vector3 {
+  const nx = (u - 0.5) * 1.6;
+  const ny = 0.35 + (1 - v) * 0.9;
+  const nz = (0.5 - v) * 0.85;
+  return new THREE.Vector3(nx, ny, nz).normalize();
+}
+
+function evaluateLightingAtPoint(
+  point: THREE.Vector3,
+  normal: THREE.Vector3,
+  lights: THREE.Light[]
+): THREE.Color {
+  const color = new THREE.Color(0.04, 0.04, 0.05);
+  const direction = new THREE.Vector3();
+  const lightDirection = new THREE.Vector3();
+  const targetPosition = new THREE.Vector3();
+
+  for (const light of lights) {
+    if (light instanceof THREE.AmbientLight) {
+      color.add(light.color.clone().multiplyScalar(light.intensity));
+      continue;
+    }
+
+    if (light instanceof THREE.HemisphereLight) {
+      const skyFactor = THREE.MathUtils.clamp(normal.y * 0.5 + 0.5, 0, 1);
+      color.add(light.color.clone().multiplyScalar(light.intensity * skyFactor));
+      color.add(light.groundColor.clone().multiplyScalar(light.intensity * (1 - skyFactor)));
+      continue;
+    }
+
+    if (light instanceof THREE.DirectionalLight) {
+      light.getWorldDirection(direction);
+      lightDirection.copy(direction).negate().normalize();
+      const diffuse = Math.max(normal.dot(lightDirection), 0);
+      color.add(light.color.clone().multiplyScalar(light.intensity * diffuse));
+      continue;
+    }
+
+    if (light instanceof THREE.PointLight) {
+      lightDirection.copy(light.position).sub(point);
+      const distance = Math.max(lightDirection.length(), 0.001);
+      lightDirection.normalize();
+      const diffuse = Math.max(normal.dot(lightDirection), 0);
+      const attenuation =
+        light.distance && light.distance > 0
+          ? Math.max(0, 1 - distance / light.distance)
+          : 1 / (1 + distance * 0.08);
+      color.add(light.color.clone().multiplyScalar(light.intensity * diffuse * attenuation));
+      continue;
+    }
+
+    if (light instanceof THREE.SpotLight) {
+      lightDirection.copy(light.position).sub(point);
+      const distance = Math.max(lightDirection.length(), 0.001);
+      const sampleDirection = lightDirection.clone().normalize();
+      targetPosition.setFromMatrixPosition(light.target.matrixWorld);
+      direction.copy(targetPosition).sub(light.position).normalize();
+      const spot = Math.max(direction.dot(sampleDirection.clone().negate()), 0);
+      const cone = light.angle > 0 ? Math.pow(spot, Math.max(1, 1 / light.angle)) : spot;
+      const diffuse = Math.max(normal.dot(sampleDirection), 0);
+      const attenuation =
+        light.distance && light.distance > 0
+          ? Math.max(0, 1 - distance / light.distance)
+          : 1 / (1 + distance * 0.08);
+      color.add(light.color.clone().multiplyScalar(light.intensity * diffuse * cone * attenuation));
+    }
+  }
+
+  color.r = Math.min(2.0, color.r);
+  color.g = Math.min(2.0, color.g);
+  color.b = Math.min(2.0, color.b);
+  return color;
+}
+
 // ============================================
 // Default Configurations
 // ============================================
@@ -192,7 +337,7 @@ export class ShadowSystem {
 
   private configureRenderer(): void {
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
   }
 
   /**
@@ -272,7 +417,7 @@ export class ShadowSystem {
   enablePCF(light: THREE.Light, samples: number = 4): void {
     if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
       light.shadow.radius = samples;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      this.renderer.shadowMap.type = THREE.PCFShadowMap;
     }
   }
 
@@ -1145,12 +1290,9 @@ export class LightingSystem {
   private hemisphereLight: THREE.HemisphereLight | null = null;
   private currentPreset: string | null = null;
 
-  private clock: THREE.Clock;
   private time: number = 0;
 
-  constructor() {
-    this.clock = new THREE.Clock();
-  }
+  constructor() {}
 
   /**
    * Initialize the lighting system
@@ -1167,7 +1309,7 @@ export class LightingSystem {
 
     // Configure renderer for shadows
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1;
   }
@@ -1469,20 +1611,105 @@ export class LightingSystem {
   }
 
   /**
-   * Bake lightmaps (placeholder - requires additional setup)
+   * Bake approximate lightmaps directly in-engine and apply them as lightMap textures.
    */
   async bakeLightmaps(scene: THREE.Scene): Promise<void> {
-    // Lightmap baking typically requires a dedicated baking tool
-    // This is a placeholder for the API
-    console.log('Lightmap baking initiated for scene:', scene.name || 'unnamed');
+    const lights = collectSceneLights(scene);
+    const baked: Array<{ mesh: string; textureSize: number }> = [];
+    let generatedUv2 = 0;
 
-    // In a real implementation, this would:
-    // 1. Generate UV2 coordinates for all meshes
-    // 2. Render lightmaps from each light's perspective
-    // 3. Store lightmaps as textures
-    // 4. Apply lightmaps to materials
+    scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || !(object.geometry instanceof THREE.BufferGeometry)) {
+        return;
+      }
 
-    return Promise.resolve();
+      const hadUv2 = Boolean(object.geometry.getAttribute('uv2'));
+      const createdUv2 = !hadUv2 && ensureUv2(object.geometry);
+      if (!object.geometry.getAttribute('uv2')) {
+        return;
+      }
+      if (createdUv2) generatedUv2 += 1;
+
+      const textureSize = 32;
+      const data = new Uint8Array(textureSize * textureSize * 4);
+      const center = computeMeshCenter(object);
+      const box = new THREE.Box3().setFromObject(object);
+      const size = box.getSize(new THREE.Vector3());
+      const depthJitter = Math.max(0.1, size.z || size.x || 0.25);
+
+      for (let y = 0; y < textureSize; y++) {
+        for (let x = 0; x < textureSize; x++) {
+          const u = x / Math.max(1, textureSize - 1);
+          const v = y / Math.max(1, textureSize - 1);
+          const samplePoint = new THREE.Vector3(
+            THREE.MathUtils.lerp(box.min.x, box.max.x, u),
+            THREE.MathUtils.lerp(box.max.y, box.min.y, v),
+            center.z + (u - 0.5) * depthJitter * 0.35
+          );
+          const normal = pseudoNormalFromUv(u, v);
+          const lighting = evaluateLightingAtPoint(samplePoint, normal, lights);
+          const edgeOcclusion = 0.74 + 0.26 * (1 - Math.abs(u - 0.5) * 2) * (1 - Math.abs(v - 0.5) * 2);
+          const pixelIndex = (y * textureSize + x) * 4;
+          data[pixelIndex] = Math.round(THREE.MathUtils.clamp(lighting.r * edgeOcclusion * 255, 0, 255));
+          data[pixelIndex + 1] = Math.round(THREE.MathUtils.clamp(lighting.g * edgeOcclusion * 255, 0, 255));
+          data[pixelIndex + 2] = Math.round(THREE.MathUtils.clamp(lighting.b * edgeOcclusion * 255, 0, 255));
+          data[pixelIndex + 3] = 255;
+        }
+      }
+
+      const lightMap = new THREE.DataTexture(data, textureSize, textureSize, THREE.RGBAFormat);
+      lightMap.needsUpdate = true;
+      lightMap.colorSpace = THREE.SRGBColorSpace;
+      lightMap.flipY = false;
+
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => {
+        if (!material || !isLightMapCapableMaterial(material)) return;
+        if (material.lightMap && material.lightMap instanceof THREE.Texture) {
+          material.lightMap.dispose();
+        }
+        material.lightMap = lightMap;
+        material.lightMapIntensity = 1;
+        material.needsUpdate = true;
+      });
+
+      object.userData.bakedLightmap = lightMap;
+      baked.push({ mesh: object.name || object.uuid, textureSize });
+    });
+
+    scene.userData.lightmapBakeSummary = {
+      bakedMeshes: baked.length,
+      generatedUv2,
+      lights: lights.length,
+      entries: baked,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  clearBakedLightmaps(scene: THREE.Scene): void {
+    const disposedTextures = new Set<THREE.Texture>();
+
+    scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) {
+        return;
+      }
+
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => {
+        if (!material || !isLightMapCapableMaterial(material)) return;
+        if (material.lightMap && !disposedTextures.has(material.lightMap)) {
+          disposedTextures.add(material.lightMap);
+          material.lightMap.dispose();
+        }
+        material.lightMap = null;
+        material.lightMapIntensity = 1;
+        material.needsUpdate = true;
+      });
+
+      delete object.userData.bakedLightmap;
+    });
+
+    delete scene.userData.lightmapBakeSummary;
   }
 
   /**

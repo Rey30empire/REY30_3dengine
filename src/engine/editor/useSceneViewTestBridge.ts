@@ -55,6 +55,8 @@ interface EntitySimulationSnapshot {
   useGravity: boolean | null;
   isKinematic: boolean | null;
   hasParticleSystem: boolean;
+  particlePresetId: string | null;
+  particleSimulationBackend: string | null;
   particleRate: number | null;
   particleMaxParticles: number | null;
   particleLooping: boolean | null;
@@ -71,6 +73,29 @@ interface EntityModifierStackSnapshot {
 interface ViewportCaptureOptions {
   mimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
   quality?: number;
+}
+
+interface ViewportRenderMeasurementOptions {
+  frames?: number;
+}
+
+interface ViewportRenderMeasurement {
+  frames: number;
+  totalMs: number;
+  averageFrameTimeMs: number;
+  fps: number;
+  frameTimeMs: number;
+  cpuTimeMs: number;
+  gpuTimeMs: number;
+  drawCalls: number;
+  triangles: number;
+  vertices: number;
+  memoryUsedMb: number;
+  memoryAllocatedMb: number;
+  textures: number;
+  meshes: number;
+  audioBuffers: number;
+  source: 'editor_viewport_manual_smoke';
 }
 
 declare global {
@@ -158,6 +183,10 @@ declare global {
       getEntitySimulationInfo: (entityId: string) => EntitySimulationSnapshot | null;
       getEntityModifierInfo: (entityId: string) => EntityModifierStackSnapshot | null;
       captureViewportDataUrl: (options?: ViewportCaptureOptions) => string | null;
+      measureViewportRender: (options?: ViewportRenderMeasurementOptions) => ViewportRenderMeasurement | null;
+      createScene: (name: string) => { id: string; name: string } | null;
+      setActiveScene: (sceneId: string) => boolean;
+      getActiveScene: () => { id: string; name: string } | null;
       setProjectName: (name: string) => boolean;
       getProjectName: () => string;
       getPaintEditorState: () => {
@@ -267,6 +296,7 @@ export function useSceneViewTestBridge(params: {
   createManualEntity: (kind: 'cube' | 'sphere' | 'light' | 'camera') => string;
   simulatePaintStroke: (points: Array<{ x: number; y: number }>) => boolean;
   captureViewportDataUrl: (options?: ViewportCaptureOptions) => string | null;
+  measureViewportRender: (options?: ViewportRenderMeasurementOptions) => ViewportRenderMeasurement | null;
 }) {
   const {
     containerRef,
@@ -276,6 +306,7 @@ export function useSceneViewTestBridge(params: {
     createManualEntity,
     simulatePaintStroke,
     captureViewportDataUrl,
+    measureViewportRender,
   } = params;
 
   useEffect(() => {
@@ -858,6 +889,14 @@ export function useSceneViewTestBridge(params: {
               ? rigidbodyData.isKinematic
               : null,
           hasParticleSystem: Boolean(entity.components.get('ParticleSystem')),
+          particlePresetId:
+            particleData && typeof particleData.presetId === 'string'
+              ? particleData.presetId
+              : null,
+          particleSimulationBackend:
+            particleData && typeof particleData.simulationBackend === 'string'
+              ? particleData.simulationBackend
+              : null,
           particleRate:
             particleData && typeof particleData.rate === 'number' ? particleData.rate : null,
           particleMaxParticles:
@@ -884,6 +923,23 @@ export function useSceneViewTestBridge(params: {
         };
       },
       captureViewportDataUrl: (options) => captureViewportDataUrl(options),
+      measureViewportRender: (options) => measureViewportRender(options),
+      createScene: (name) => {
+        const scene = useEngineStore.getState().createScene(name);
+        return scene ? { id: scene.id, name: scene.name } : null;
+      },
+      setActiveScene: (sceneId) => {
+        const store = useEngineStore.getState();
+        const scene = store.scenes.find((candidate) => candidate.id === sceneId) ?? null;
+        if (!scene) return false;
+        store.setActiveScene(sceneId);
+        return true;
+      },
+      getActiveScene: () => {
+        const store = useEngineStore.getState();
+        const scene = store.scenes.find((candidate) => candidate.id === store.activeSceneId) ?? null;
+        return scene ? { id: scene.id, name: scene.name } : null;
+      },
       setProjectName: (name) => {
         useEngineStore.getState().setProjectName(name);
         return true;
@@ -935,6 +991,7 @@ export function useSceneViewTestBridge(params: {
     captureViewportDataUrl,
     containerRef,
     createManualEntity,
+    measureViewportRender,
     sceneRef,
     simulatePaintStroke,
     transformToolsRef,

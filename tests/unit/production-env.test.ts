@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveProductionEnv } from '../../scripts/production-env.mjs';
+import {
+  resolveProductionEnv,
+  resolveProductionEnvWithMetadata,
+} from '../../scripts/production-env.mjs';
 
 describe('resolveProductionEnv', () => {
   it('builds a usable production-like env from process env plus example defaults', () => {
@@ -125,6 +128,27 @@ describe('resolveProductionEnv', () => {
       expect(resolved.DATABASE_URL).toBe(
         'postgresql://netlify:secret@ep-example-pooler.us-east-1.aws.neon.tech/rey30'
       );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports which smoke credentials were explicit vs generated', () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'rey30-production-env-'));
+
+    try {
+      const result = resolveProductionEnvWithMetadata({
+        root: tempDir,
+        env: {
+          DATABASE_URL: 'postgresql://postgres:postgres@127.0.0.1:5432/rey30?schema=public',
+          SMOKE_USER_EMAIL: 'seal-smoke@example.com',
+        },
+      });
+
+      expect(result.resolved.SMOKE_USER_EMAIL).toBe('seal-smoke@example.com');
+      expect(result.metadata.explicitKeys).toContain('SMOKE_USER_EMAIL');
+      expect(result.metadata.explicitKeys).not.toContain('SMOKE_USER_PASSWORD');
+      expect(result.metadata.generatedKeys).toContain('SMOKE_USER_PASSWORD');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

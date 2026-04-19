@@ -6,8 +6,9 @@ from uuid import uuid4
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
-from .pipeline import run_profile_a_job, utc_now_iso
+from .pipeline import build_base_mesh_payload, run_profile_a_job, utc_now_iso
 from .schemas import (
+    CharacterBaseMeshResponse,
     CharacterJobCreateRequest,
     CharacterJobCreateResponse,
     CharacterJobResultResponse,
@@ -19,7 +20,7 @@ from .storage import ensure_storage, read_job, write_job
 app = FastAPI(
     title="REY30 Character Backend (Profile A)",
     version="0.1.0",
-    description="Lightweight procedural character backend: no heavy AI model required.",
+    description="Prompt-conditioned character package backend with validation and lightweight assets.",
 )
 
 
@@ -33,8 +34,22 @@ def healthz() -> dict[str, str]:
     return {
         "status": "ok",
         "profile": "A",
-        "mode": "procedural_rig",
+        "mode": "character_bundle",
     }
+
+
+@app.post("/v1/character/base-mesh", response_model=CharacterBaseMeshResponse)
+def create_character_base_mesh(
+    body: CharacterJobCreateRequest,
+) -> CharacterBaseMeshResponse:
+    payload = build_base_mesh_payload(body)
+    return CharacterBaseMeshResponse(
+        success=True,
+        mesh=payload["mesh"],
+        quality=payload["quality"],
+        review=payload["review"],
+        metadata=payload["metadata"],
+    )
 
 
 @app.post("/v1/character/jobs", response_model=CharacterJobCreateResponse)

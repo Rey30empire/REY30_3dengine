@@ -5,6 +5,7 @@ import path from 'path';
 import { UserRole } from '@prisma/client';
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
+import { getAssetDbPath } from '@/engine/assets/pipeline';
 import { POST as texturePaintPersistPost } from '@/app/api/texture-paint/persist/route';
 import { createSessionForUser, SESSION_COOKIE_NAME } from '@/lib/security/auth';
 
@@ -92,6 +93,8 @@ describe('Texture paint persist API', () => {
       formData.append('name', 'Hull_Base');
       formData.append('slot', 'albedo');
       formData.append('entityName', 'HullMesh');
+      formData.append('entityId', 'entity-hull');
+      formData.append('resolution', '2048');
 
       const response = await texturePaintPersistPost(
         buildAuthedRequest(
@@ -113,9 +116,11 @@ describe('Texture paint persist API', () => {
           type: 'texture',
           metadata: expect.objectContaining({
             texturePaint: true,
+            entityId: 'entity-hull',
             entityName: 'HullMesh',
             slot: 'albedo',
             projectKey: 'star_forge',
+            resolution: 2048,
           }),
         })
       );
@@ -124,9 +129,7 @@ describe('Texture paint persist API', () => {
       const savedFile = path.join(paintDir, path.basename(payload.asset.path));
       await expect(access(savedFile)).resolves.toBeUndefined();
 
-      const dbPayload = JSON.parse(
-        await readFile(path.join(assetRoot, '..', 'assets-db.json'), 'utf-8')
-      ) as {
+      const dbPayload = JSON.parse(await readFile(getAssetDbPath(), 'utf-8')) as {
         assets: Array<{ path: string; metadata?: Record<string, unknown> }>;
       };
       expect(dbPayload.assets).toEqual(
@@ -135,13 +138,84 @@ describe('Texture paint persist API', () => {
             path: toWorkspaceRelative(savedFile),
             metadata: expect.objectContaining({
               texturePaint: true,
+              entityId: 'entity-hull',
               entityName: 'HullMesh',
               slot: 'albedo',
               projectKey: 'star_forge',
+              resolution: 2048,
             }),
           }),
         ])
       );
+    });
+  });
+
+  it('overwrites the same painted slot deterministically without duplicating the asset row', async () => {
+    await withTempAssetRoot(async (assetRoot) => {
+      const { token } = await createEditorSession();
+
+      const buildPaintBody = (bytes: number[]) => {
+        const formData = new FormData();
+        formData.append(
+          'file',
+          new File([Uint8Array.from(bytes)], 'trim.png', { type: 'image/png' })
+        );
+        formData.append('name', 'Hull Trim');
+        formData.append('slot', 'metallic');
+        formData.append('entityName', 'HullMesh');
+        formData.append('entityId', 'entity-hull');
+        return formData;
+      };
+
+      const firstResponse = await texturePaintPersistPost(
+        buildAuthedRequest(
+          'http://localhost/api/texture-paint/persist',
+          token,
+          buildPaintBody([1, 2, 3, 4]),
+          'Star Forge'
+        )
+      );
+      const firstPayload = await firstResponse.json();
+      expect(firstResponse.status).toBe(200);
+
+      const secondResponse = await texturePaintPersistPost(
+        buildAuthedRequest(
+          'http://localhost/api/texture-paint/persist',
+          token,
+          buildPaintBody([9, 8, 7, 6]),
+          'Star Forge'
+        )
+      );
+      const secondPayload = await secondResponse.json();
+      expect(secondResponse.status).toBe(200);
+
+      expect(secondPayload.asset.path).toBe(firstPayload.asset.path);
+      expect(secondPayload.asset.name).toBe('Hull_Trim');
+
+      const savedFile = path.join(
+        assetRoot,
+        'texture',
+        'paint',
+        'star_forge',
+        'entity-hull__metallic.png'
+      );
+      await expect(access(savedFile)).resolves.toBeUndefined();
+      expect(Array.from(await readFile(savedFile))).toEqual([9, 8, 7, 6]);
+
+      const dbPayload = JSON.parse(await readFile(getAssetDbPath(), 'utf-8')) as {
+        assets: Array<{ path: string; name: string; metadata?: Record<string, unknown> }>;
+      };
+      const rows = dbPayload.assets.filter(
+        (asset) => asset.path === toWorkspaceRelative(savedFile)
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        name: 'Hull_Trim',
+        metadata: expect.objectContaining({
+          texturePaint: true,
+          stableKey: 'star_forge:entity-hull:metallic',
+        }),
+      });
     });
   });
 });

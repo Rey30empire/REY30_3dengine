@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { getAPIConfig } from '@/lib/api-config';
 import { useActiveScene, useEngineStore } from '@/store/editorStore';
 import { buildAssetFileUrl } from './assetUrls';
 import { persistCompositorStill, persistCompositorVideoJob, toEngineAsset } from './compositorAssets';
@@ -20,13 +19,9 @@ import {
   type CompositorLookPresetId,
 } from './compositorVideoPipeline';
 import {
-  fetchBackendProviderStatus,
-  resolveCapabilityStatus,
-} from './ai/providerStatus';
-import {
-  requestOpenAIVideo,
-  requestRunwayTaskStatus,
-  requestRunwayTextToVideo,
+  requestAssistantStatus,
+  requestAssistantTaskStatus,
+  requestAssistantVideo,
 } from './ai/requestClient';
 
 function readNumericInput(rawValue: string, fallback: number) {
@@ -51,6 +46,28 @@ async function copyTextToClipboard(content: string) {
   await navigator.clipboard.writeText(content);
 }
 
+function sessionHasAssistantVideoAccess(payload: Awaited<ReturnType<typeof requestAssistantStatus>>['data']) {
+  const video = payload.assistant?.capabilities?.video;
+  return !!video?.standard || !!video?.cinematic;
+}
+
+function readAssistantVideoUrl(payload: Record<string, any>): string {
+  const asset =
+    typeof payload.asset === 'object' && payload.asset
+      ? (payload.asset as Record<string, unknown>)
+      : null;
+
+  if (asset && typeof asset.url === 'string' && asset.url.trim()) {
+    return asset.url;
+  }
+
+  if (typeof payload.url === 'string' && payload.url.trim()) {
+    return payload.url;
+  }
+
+  return '';
+}
+
 export function CompositorVideoPanel() {
   const activeScene = useActiveScene();
   const { projectName, updateScene, addAsset } = useEngineStore();
@@ -58,7 +75,7 @@ export function CompositorVideoPanel() {
     useState<CompositorLookPresetId>('trailer_punch');
   const [captureName, setCaptureName] = useState('hero_frame');
   const [jobName, setJobName] = useState('hero_trailer_job');
-  const [status, setStatus] = useState('Listo para capturar still y preparar job de video.');
+  const [status, setStatus] = useState('Listo para capturar still y preparar video.');
   const [busy, setBusy] = useState<'idle' | 'capture' | 'job' | 'video'>('idle');
   const [lastStillPath, setLastStillPath] = useState('');
   const [lastJobPath, setLastJobPath] = useState('');
@@ -199,64 +216,57 @@ export function CompositorVideoPanel() {
 
     setBusy('video');
     try {
-      const config = getAPIConfig();
-      const backendStatus = await fetchBackendProviderStatus();
-      const capabilityStatus = resolveCapabilityStatus(config, backendStatus);
-      const provider = config.routing.video;
+      const { data: assistantStatus } = await requestAssistantStatus();
+      if (!assistantStatus.authenticated) {
+        setStatus('Inicia sesion con una cuenta autorizada para generar video.');
+        return;
+      }
+      if (!sessionHasAssistantVideoAccess(assistantStatus)) {
+        setStatus('La generacion de video no esta disponible para esta sesion. Revisa Administracion.');
+        return;
+      }
+
       const jobAssetPath = lastJobPath || (await queueVideoJob()) || '';
+      const renderDuration = Math.max(1, Math.min(30, shotDraft.durationSeconds));
 
       let videoUrl = '';
-      let taskId = '';
+      let taskToken = '';
+      let lastKnownStatus = 'queued';
 
-      if (provider === 'runway') {
-        if (!capabilityStatus.runwayVideoReady) {
-          setStatus('Runway video no esta listo en Config APIs.');
-          return;
-        }
+      const { response, data } = await requestAssistantVideo({
+        prompt: videoPrompt,
+        projectName: projectName || 'untitled_project',
+        duration: renderDuration,
+        ratio: shotDraft.aspectRatio,
+      });
+      if (!response.ok) {
+        throw new Error(data.error || 'No se pudo iniciar el render de video.');
+      }
 
-        const { response, data } = await requestRunwayTextToVideo({
-          config,
-          prompt: videoPrompt,
-          projectName: projectName || 'untitled_project',
-        });
-        if (!response.ok) {
-          throw new Error(data.error || 'No se pudo iniciar el render de video en Runway');
-        }
+      videoUrl = readAssistantVideoUrl(data);
+      taskToken = typeof data.taskToken === 'string' ? data.taskToken : '';
+      lastKnownStatus = typeof data.status === 'string' ? data.status : lastKnownStatus;
 
-        taskId = data.id || data.taskId || '';
-        for (let attempt = 0; attempt < 12 && taskId; attempt += 1) {
-          await sleep(2500);
-          const { data: statusData } = await requestRunwayTaskStatus(taskId);
-          const outputs = statusData.output || statusData.outputs || [];
-          videoUrl =
-            outputs?.[0]?.url ||
-            outputs?.[0] ||
-            statusData.url ||
-            '';
-          const normalizedStatus = String(statusData.status || '').toLowerCase();
-          if (videoUrl || normalizedStatus.includes('complete') || normalizedStatus.includes('succeed')) {
-            break;
-          }
-          if (normalizedStatus.includes('fail')) {
-            throw new Error(statusData.error || 'Runway devolvio un error al renderizar el video');
-          }
-        }
-      } else {
-        if (!capabilityStatus.openAIVideoReady) {
-          setStatus('OpenAI video no esta listo en Config APIs.');
-          return;
+      for (let attempt = 0; attempt < 12 && !videoUrl && taskToken; attempt += 1) {
+        await sleep(2500);
+        const { response: statusResponse, data: statusData } = await requestAssistantTaskStatus(taskToken);
+        if (!statusResponse.ok) {
+          throw new Error(statusData.error || 'No se pudo consultar el render de video.');
         }
 
-        const { response, data } = await requestOpenAIVideo({
-          config,
-          prompt: videoPrompt,
-          projectName: projectName || 'untitled_project',
-        });
-        if (!response.ok) {
-          throw new Error(data.error || 'No se pudo iniciar el render de video en OpenAI');
+        videoUrl = readAssistantVideoUrl(statusData);
+        lastKnownStatus =
+          typeof statusData.status === 'string' ? statusData.status.toLowerCase() : lastKnownStatus;
+
+        if (videoUrl) {
+          break;
         }
-        taskId = data.id || data.videoId || '';
-        videoUrl = data.url || '';
+        if (lastKnownStatus.includes('fail') || lastKnownStatus.includes('error')) {
+          throw new Error(statusData.error || 'El servicio de video devolvio un error al renderizar.');
+        }
+        if (lastKnownStatus.includes('cancel')) {
+          throw new Error('La tarea de video fue cancelada.');
+        }
       }
 
       if (videoUrl) {
@@ -269,19 +279,27 @@ export function CompositorVideoPanel() {
           createdAt: new Date(),
           metadata: {
             compositorGenerated: true,
-            provider,
+            assistantManaged: true,
+            generationKind: 'video',
             prompt: videoPrompt,
             jobAssetPath,
             posterFrameAssetPath: lastStillPath || null,
             sceneName: activeScene.name,
           },
         });
-        setStatus(`Video generado y agregado a Assets (${provider}).`);
+        setStatus('Video generado y agregado a Assets.');
+        return;
+      }
+
+      if (lastKnownStatus.includes('complete')) {
+        setStatus('El video termino de procesarse, pero todavia no devolvio un archivo listo.');
         return;
       }
 
       setStatus(
-        `Video en cola (${provider}). Task: ${taskId || 'sin id'} · job: ${jobAssetPath || 'sin path'}`
+        jobAssetPath
+          ? `Video en cola. El render sigue en progreso. Job: ${jobAssetPath}`
+          : 'Video en cola. El render sigue en progreso.'
       );
     } catch (error) {
       setStatus(`Error generando video: ${String(error)}`);
@@ -293,7 +311,7 @@ export function CompositorVideoPanel() {
   if (!activeScene) {
     return (
       <div className="h-full p-4 text-sm text-slate-500">
-        Selecciona o crea una escena para usar el pipeline de compositor y video.
+        Selecciona o crea una escena para usar compositor y video.
       </div>
     );
   }
@@ -305,8 +323,8 @@ export function CompositorVideoPanel() {
           <div>
             <h3 className="text-sm font-medium text-slate-200">Compositor & Video</h3>
             <p className="mt-1 text-[11px] text-slate-500">
-              Captura stills reales del viewport, empaqueta jobs de video persistentes y prepara
-              handoff a OpenAI/Runway cuando el provider este listo.
+              Captura stills reales del viewport, empaqueta jobs persistentes y envia el render al
+              asistente cuando la sesion este lista.
             </p>
           </div>
           <div className="rounded-md border border-slate-800 bg-slate-900/70 px-3 py-2 text-[11px] text-slate-400">
@@ -539,7 +557,7 @@ export function CompositorVideoPanel() {
                   onClick={() => void generateCloudVideo()}
                   disabled={busy !== 'idle'}
                 >
-                  Generate cloud video
+                  Generate video
                 </Button>
               </div>
               {lastJobPath && (

@@ -529,21 +529,50 @@ export function normalizeProjectKey(input: string | null | undefined): string | 
   return normalized || null;
 }
 
-export async function getUserUsageAlertProfile(userId: string): Promise<UserUsageAlertProfile> {
+export async function getUserUsageAlertProfile(
+  userId: string,
+  options?: { persistDefaults?: boolean }
+): Promise<UserUsageAlertProfile> {
   const row = await db.userUsageAlertProfile.findUnique({ where: { userId } });
   if (!row) {
     const defaults = defaultAlertProfile();
-    await db.userUsageAlertProfile.create({
-      data: {
-        userId,
-        enabled: defaults.enabled,
-        totalWarningRatio: defaults.totalWarningRatio,
-        providerWarningRatio: defaults.providerWarningRatio,
-        projectWarningRatio: defaults.projectWarningRatio,
-        includeLocalProviders: defaults.includeLocalProviders,
-      },
-    });
-    return defaults;
+    if (options?.persistDefaults === false) {
+      return defaults;
+    }
+
+    try {
+      await db.userUsageAlertProfile.createMany({
+        data: [
+          {
+            userId,
+            enabled: defaults.enabled,
+            totalWarningRatio: defaults.totalWarningRatio,
+            providerWarningRatio: defaults.providerWarningRatio,
+            projectWarningRatio: defaults.projectWarningRatio,
+            includeLocalProviders: defaults.includeLocalProviders,
+          },
+        ],
+        skipDuplicates: true,
+      });
+    } catch (error) {
+      if (await shouldIgnoreDeletedUserRace(userId, error)) {
+        return defaults;
+      }
+      throw error;
+    }
+
+    const ensured = await db.userUsageAlertProfile.findUnique({ where: { userId } });
+    if (!ensured) {
+      return defaults;
+    }
+
+    return {
+      enabled: !!ensured.enabled,
+      totalWarningRatio: toRatio(ensured.totalWarningRatio, defaults.totalWarningRatio),
+      providerWarningRatio: toRatio(ensured.providerWarningRatio, defaults.providerWarningRatio),
+      projectWarningRatio: toRatio(ensured.projectWarningRatio, defaults.projectWarningRatio),
+      includeLocalProviders: !!ensured.includeLocalProviders,
+    };
   }
 
   return {
@@ -876,11 +905,12 @@ function alertSeverity(status: 'ok' | 'warning' | 'blocked'): 'warning' | 'criti
 
 export async function getPersonalizedUsageAlerts(
   userId: string,
-  period = getPeriod()
+  period = getPeriod(),
+  options?: { persistDefaults?: boolean }
 ): Promise<PersonalizedUsageAlert[]> {
   const [profile, summary, projectSummary] = await Promise.all([
-    getUserUsageAlertProfile(userId),
-    getUsageSummary(userId, period),
+    getUserUsageAlertProfile(userId, { persistDefaults: options?.persistDefaults }),
+    getUsageSummary(userId, period, { persistDefaults: options?.persistDefaults }),
     getProjectUsageSummary(userId, period),
   ]);
 
@@ -1107,23 +1137,7 @@ function normalizePolicyInput(input: BudgetApprovalPolicyInput): {
 }
 
 async function ensureDefaultApprovalPolicies(): Promise<void> {
-  const count = await db.budgetApprovalPolicy.count();
-  if (count > 0) return;
-
-  await db.budgetApprovalPolicy.createMany({
-    data: defaultApprovalPolicies().map((policy) => {
-      const normalized = normalizePolicyInput(policy);
-      return {
-        role: normalized.role,
-        projectKey: normalized.projectKey,
-        autoApproveBelowUsd: normalized.autoApproveBelowUsd,
-        requireManualForProviderChanges: normalized.requireManualForProviderChanges,
-        requireReason: normalized.requireReason,
-        alwaysRequireManual: normalized.alwaysRequireManual,
-        enabled: normalized.enabled,
-      };
-    }),
-  });
+  return;
 }
 
 export async function getBudgetApprovalPolicies(): Promise<BudgetApprovalPolicyItem[]> {
@@ -1131,6 +1145,25 @@ export async function getBudgetApprovalPolicies(): Promise<BudgetApprovalPolicyI
   const rows = await db.budgetApprovalPolicy.findMany({
     orderBy: [{ role: 'asc' }, { projectKey: 'asc' }, { createdAt: 'asc' }],
   });
+  if (rows.length === 0) {
+    const timestamp = new Date().toISOString();
+    return defaultApprovalPolicies().map((policy) => {
+      const normalized = normalizePolicyInput(policy);
+      return {
+        id: `default:${normalized.role}:${normalized.projectKey || '*'}`,
+        role: normalized.role,
+        projectKey: normalized.projectKey,
+        autoApproveBelowUsd: normalized.autoApproveBelowUsd,
+        requireManualForProviderChanges: normalized.requireManualForProviderChanges,
+        requireReason: normalized.requireReason,
+        alwaysRequireManual: normalized.alwaysRequireManual,
+        enabled: normalized.enabled,
+        createdByUserId: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+    });
+  }
   return rows.map((row) => toPolicyItem(row));
 }
 
@@ -1214,20 +1247,42 @@ export async function getFinOpsAutomationControl(
   });
   if (!existing) {
     const defaults = normalizeAutomationControlInput({ controlKey: normalizedKey });
-    await db.finOpsAutomationControl.create({
-      data: {
-        controlKey: defaults.controlKey,
-        enabled: defaults.enabled,
-        windowStartUtc: defaults.windowStartUtc,
-        windowEndUtc: defaults.windowEndUtc,
-        cooldownMinutes: defaults.cooldownMinutes,
-        maxActionsPerRun: defaults.maxActionsPerRun,
-        minSeverity: defaults.minSeverity,
-        allowPolicyMutations: defaults.allowPolicyMutations,
-        allowBudgetMutations: defaults.allowBudgetMutations,
-      },
+    await db.finOpsAutomationControl.createMany({
+      data: [
+        {
+          controlKey: defaults.controlKey,
+          enabled: defaults.enabled,
+          windowStartUtc: defaults.windowStartUtc,
+          windowEndUtc: defaults.windowEndUtc,
+          cooldownMinutes: defaults.cooldownMinutes,
+          maxActionsPerRun: defaults.maxActionsPerRun,
+          minSeverity: defaults.minSeverity,
+          allowPolicyMutations: defaults.allowPolicyMutations,
+          allowBudgetMutations: defaults.allowBudgetMutations,
+        },
+      ],
+      skipDuplicates: true,
     });
-    return defaults;
+    const created = await db.finOpsAutomationControl.findUnique({
+      where: { controlKey: normalizedKey },
+    });
+    if (!created) {
+      return defaults;
+    }
+    return normalizeAutomationControlInput(
+      {
+        controlKey: created.controlKey,
+        enabled: created.enabled,
+        windowStartUtc: created.windowStartUtc,
+        windowEndUtc: created.windowEndUtc,
+        cooldownMinutes: created.cooldownMinutes,
+        maxActionsPerRun: created.maxActionsPerRun,
+        minSeverity: parseSeverity(created.minSeverity, defaultAutomationControl().minSeverity),
+        allowPolicyMutations: created.allowPolicyMutations,
+        allowBudgetMutations: created.allowBudgetMutations,
+      },
+      defaultAutomationControl()
+    );
   }
 
   return normalizeAutomationControlInput(
@@ -1592,8 +1647,8 @@ export async function getEnterpriseFinOpsReport(options?: {
     users.map(async (user) => {
       try {
         const [alerts, summary, projectSummary] = await Promise.all([
-          getPersonalizedUsageAlerts(user.id, period),
-          getUsageSummary(user.id, period),
+          getPersonalizedUsageAlerts(user.id, period, { persistDefaults: false }),
+          getUsageSummary(user.id, period, { persistDefaults: false }),
           getProjectUsageSummary(user.id, period),
         ]);
         const topProject = projectSummary.projects[0];
@@ -1689,16 +1744,37 @@ export async function getUserFinOpsAutopilotConfig(
   const row = await db.userFinOpsAutopilot.findUnique({ where: { userId } });
   if (!row) {
     const defaults = defaultAutopilotConfig();
-    await db.userFinOpsAutopilot.create({
-      data: {
-        userId,
-        enabled: defaults.enabled,
-        seasonalityEnabled: defaults.seasonalityEnabled,
-        budgetBufferRatio: defaults.budgetBufferRatio,
-        lookbackMonths: defaults.lookbackMonths,
-      },
+    try {
+      await db.userFinOpsAutopilot.createMany({
+        data: [
+          {
+            userId,
+            enabled: defaults.enabled,
+            seasonalityEnabled: defaults.seasonalityEnabled,
+            budgetBufferRatio: defaults.budgetBufferRatio,
+            lookbackMonths: defaults.lookbackMonths,
+          },
+        ],
+        skipDuplicates: true,
+      });
+    } catch (error) {
+      if (await shouldIgnoreDeletedUserRace(userId, error)) {
+        return defaults;
+      }
+      throw error;
+    }
+
+    const ensured = await db.userFinOpsAutopilot.findUnique({ where: { userId } });
+    if (!ensured) {
+      return defaults;
+    }
+
+    return clampAutopilotConfig({
+      enabled: ensured.enabled,
+      seasonalityEnabled: ensured.seasonalityEnabled,
+      budgetBufferRatio: ensured.budgetBufferRatio,
+      lookbackMonths: ensured.lookbackMonths,
     });
-    return defaults;
   }
 
   return clampAutopilotConfig({

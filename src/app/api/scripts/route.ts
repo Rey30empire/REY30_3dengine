@@ -1,9 +1,9 @@
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
+import { deleteScriptRuntimeArtifact } from '@/lib/server/script-runtime-artifacts';
 import {
   deleteStoredScript,
-  getScriptStorageInfo,
   getStoredScript,
   listStoredScripts,
   upsertStoredScript,
@@ -15,6 +15,17 @@ import {
   normalizeScriptRelativePath,
   normalizeScriptName,
 } from './shared';
+
+const SCRIPT_PATH_INVALID_MESSAGE = 'La ruta del script no es valida.';
+const SCRIPT_NOT_FOUND_MESSAGE = 'El script solicitado no existe.';
+const SCRIPT_LIST_LOAD_FAILED_MESSAGE = 'No se pudo cargar la biblioteca de scripts.';
+const SCRIPT_NAME_REQUIRED_MESSAGE = 'El nombre del script es obligatorio.';
+const SCRIPT_ALREADY_EXISTS_MESSAGE = 'Ya existe un script con ese nombre.';
+const SCRIPT_CREATE_FAILED_MESSAGE = 'No se pudo crear el script.';
+const SCRIPT_SAVE_INPUT_REQUIRED_MESSAGE = 'Debes indicar la ruta y el contenido del script.';
+const SCRIPT_SAVE_FAILED_MESSAGE = 'No se pudo guardar el script.';
+const SCRIPT_PATH_REQUIRED_MESSAGE = 'Debes indicar la ruta del script.';
+const SCRIPT_DELETE_FAILED_MESSAGE = 'No se pudo eliminar el script.';
 
 interface ScriptCreateBody {
   name?: string;
@@ -75,10 +86,7 @@ export async function GET(request: NextRequest) {
       const script = await getStoredScript(targetPath);
       if (!script) {
         return NextResponse.json(
-          {
-            error: 'Script not found',
-            path: normalizeScriptRelativePath(targetPath),
-          },
+          { error: SCRIPT_NOT_FOUND_MESSAGE },
           { status: 404 }
         );
       }
@@ -92,15 +100,13 @@ export async function GET(request: NextRequest) {
     scripts.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
 
     return NextResponse.json({
-      root: 'scripts',
-      backend: getScriptStorageInfo().backend,
       scripts,
     });
   } catch (error) {
     if (isInvalidScriptPathError(error)) {
       return NextResponse.json(
         {
-          error: 'Invalid script path',
+          error: SCRIPT_PATH_INVALID_MESSAGE,
           scripts: [],
         },
         { status: 400 }
@@ -112,7 +118,7 @@ export async function GET(request: NextRequest) {
     console.error('[scripts][GET] failed:', error);
     return NextResponse.json(
       {
-        error: 'Failed to load scripts',
+        error: SCRIPT_LIST_LOAD_FAILED_MESSAGE,
         scripts: [],
       },
       { status: 500 }
@@ -128,7 +134,7 @@ export async function POST(request: NextRequest) {
     const rawName = body.name || '';
     const scriptName = normalizeScriptName(rawName);
     if (!scriptName) {
-      return NextResponse.json({ error: 'Script name is required' }, { status: 400 });
+      return NextResponse.json({ error: SCRIPT_NAME_REQUIRED_MESSAGE }, { status: 400 });
     }
 
     const directory = normalizeScriptRelativePath(body.directory || '');
@@ -143,11 +149,12 @@ export async function POST(request: NextRequest) {
           script: readScriptResponsePayload(existing),
         });
       }
-      return NextResponse.json({ error: 'Script already exists' }, { status: 409 });
+      return NextResponse.json({ error: SCRIPT_ALREADY_EXISTS_MESSAGE }, { status: 409 });
     }
 
     const content = typeof body.content === 'string' ? body.content : defaultScriptTemplate(scriptName);
     const script = await upsertStoredScript(relativePath, content);
+    await deleteScriptRuntimeArtifact(relativePath).catch(() => undefined);
 
     return NextResponse.json({
       created: true,
@@ -155,16 +162,13 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (isInvalidScriptPathError(error)) {
-      return NextResponse.json({ error: 'Invalid script path' }, { status: 400 });
+      return NextResponse.json({ error: SCRIPT_PATH_INVALID_MESSAGE }, { status: 400 });
     }
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {
       return authErrorToResponse(error);
     }
-    console.error('[scripts][POST] failed:', {
-      storage: getScriptStorageInfo(),
-      error,
-    });
-    return NextResponse.json({ error: 'Failed to create script' }, { status: 500 });
+    console.error('[scripts][POST] failed:', error);
+    return NextResponse.json({ error: SCRIPT_CREATE_FAILED_MESSAGE }, { status: 500 });
   }
 }
 
@@ -174,10 +178,11 @@ export async function PUT(request: NextRequest) {
     const body = (await request.json()) as ScriptSaveBody;
 
     if (!body.path || typeof body.content !== 'string') {
-      return NextResponse.json({ error: 'path and content are required' }, { status: 400 });
+      return NextResponse.json({ error: SCRIPT_SAVE_INPUT_REQUIRED_MESSAGE }, { status: 400 });
     }
 
     const script = await upsertStoredScript(body.path, body.content);
+    await deleteScriptRuntimeArtifact(body.path).catch(() => undefined);
 
     return NextResponse.json({
       script: {
@@ -189,13 +194,13 @@ export async function PUT(request: NextRequest) {
     });
   } catch (error) {
     if (isInvalidScriptPathError(error)) {
-      return NextResponse.json({ error: 'Invalid script path' }, { status: 400 });
+      return NextResponse.json({ error: SCRIPT_PATH_INVALID_MESSAGE }, { status: 400 });
     }
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {
       return authErrorToResponse(error);
     }
     console.error('[scripts][PUT] failed:', error);
-    return NextResponse.json({ error: 'Failed to save script' }, { status: 500 });
+    return NextResponse.json({ error: SCRIPT_SAVE_FAILED_MESSAGE }, { status: 500 });
   }
 }
 
@@ -206,15 +211,16 @@ export async function DELETE(request: NextRequest) {
     const targetPath = searchParams.get('path');
 
     if (!targetPath) {
-      return NextResponse.json({ error: 'path query param is required' }, { status: 400 });
+      return NextResponse.json({ error: SCRIPT_PATH_REQUIRED_MESSAGE }, { status: 400 });
     }
 
     const existing = await getStoredScript(targetPath);
     if (!existing) {
-      return NextResponse.json({ error: 'Script not found' }, { status: 404 });
+      return NextResponse.json({ error: SCRIPT_NOT_FOUND_MESSAGE }, { status: 404 });
     }
 
     await deleteStoredScript(targetPath);
+    await deleteScriptRuntimeArtifact(targetPath).catch(() => undefined);
 
     return NextResponse.json({
       success: true,
@@ -222,12 +228,12 @@ export async function DELETE(request: NextRequest) {
     });
   } catch (error) {
     if (isInvalidScriptPathError(error)) {
-      return NextResponse.json({ error: 'Invalid script path' }, { status: 400 });
+      return NextResponse.json({ error: SCRIPT_PATH_INVALID_MESSAGE }, { status: 400 });
     }
     if (String(error).includes('UNAUTHORIZED') || String(error).includes('FORBIDDEN')) {
       return authErrorToResponse(error);
     }
     console.error('[scripts][DELETE] failed:', error);
-    return NextResponse.json({ error: 'Failed to delete script' }, { status: 500 });
+    return NextResponse.json({ error: SCRIPT_DELETE_FAILED_MESSAGE }, { status: 500 });
   }
 }

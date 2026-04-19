@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { loadWorkspaceEnv } from './env-utils.mjs';
+import { applyResolvedLocalPostgresEnv, isRepoManagedLocalPostgresUrl } from './local-postgres.mjs';
 
 loadWorkspaceEnv({
   envFiles: ['.env', '.env.local', '.env.production', '.env.production.local'],
@@ -111,13 +112,14 @@ function ensureProductionEnv() {
 }
 
 async function main() {
+  await applyResolvedLocalPostgresEnv(process.env);
   const { standaloneServer, databaseUrl } = ensureProductionEnv();
 
   process.env.NODE_ENV = 'production';
   process.env.HOSTNAME = process.env.HOSTNAME || '127.0.0.1';
   process.env.PORT = process.env.PORT || '3000';
 
-  if (!shouldSkipDocker && databaseUrl.includes('127.0.0.1:5432/rey30')) {
+  if (!shouldSkipDocker && isRepoManagedLocalPostgresUrl(databaseUrl)) {
     run('pnpm', ['run', 'db:postgres:up']);
   }
 

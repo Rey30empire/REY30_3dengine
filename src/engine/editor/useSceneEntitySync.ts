@@ -3,8 +3,13 @@
 import { useEffect, type MutableRefObject } from 'react';
 import * as THREE from 'three';
 import type { Entity, SceneCollection } from '@/types/engine';
-import { ParticleEmitter } from '@/engine/rendering/ParticleSystem';
+import { getParticlePresetRegistryEntry } from '@/engine/rendering/particlePresetRegistry';
 import type { TransformTools } from './gizmos';
+import {
+  createParticlePreviewHandle,
+  type ParticlePreviewBackendPreference,
+  type ParticlePreviewRuntimeContext,
+} from './particlePreviewRuntime';
 import {
   STORE_OBJECT_PREFIX,
   asRecord,
@@ -49,6 +54,9 @@ export function useSceneEntitySync(params: {
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
+    const particlePreviewRuntime =
+      ((scene.userData?.particlePreviewRuntime ?? null) as ParticlePreviewRuntimeContext | null) ??
+      { gpuSystem: null };
 
     const disposeObject3D = (object: THREE.Object3D) => {
       object.userData?.dispose?.();
@@ -157,11 +165,20 @@ export function useSceneEntitySync(params: {
       );
     };
 
+    const readParticleNumber = (value: unknown, fallback: number) =>
+      typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
     const readParticleConfig = (entity: Entity) => {
       const particleSystem = entity.components.get('ParticleSystem');
       if (!particleSystem?.enabled) return null;
       const particleData = asRecord(particleSystem.data);
       if (!particleData) return null;
+
+      const presetEntry =
+        typeof particleData.presetId === 'string'
+          ? getParticlePresetRegistryEntry(particleData.presetId)
+          : null;
+      const preset = presetEntry?.params ?? null;
 
       const shape: 'point' | 'sphere' | 'cone' | 'box' | 'circle' =
         particleData.shape === 'point' ||
@@ -169,36 +186,149 @@ export function useSceneEntitySync(params: {
         particleData.shape === 'box' ||
         particleData.shape === 'circle'
           ? particleData.shape
+          : preset?.shape === 'point' ||
+              preset?.shape === 'cone' ||
+              preset?.shape === 'box' ||
+              preset?.shape === 'circle'
+            ? preset.shape
           : 'sphere';
       const blendMode: 'additive' | 'alpha' | 'multiply' | 'screen' =
         particleData.blendMode === 'alpha' ||
         particleData.blendMode === 'multiply' ||
         particleData.blendMode === 'screen'
           ? particleData.blendMode
+          : preset?.blendMode === 'alpha' ||
+              preset?.blendMode === 'multiply' ||
+              preset?.blendMode === 'screen'
+            ? preset.blendMode
           : 'additive';
-      const speedMin = Math.max(0, typeof particleData.speedMin === 'number' ? particleData.speedMin : 0.6);
-      const speedMax = Math.max(speedMin, typeof particleData.speedMax === 'number' ? particleData.speedMax : 1.8);
+      const direction: 'up' | 'down' | 'outward' | 'random' | 'forward' =
+        particleData.direction === 'down' ||
+        particleData.direction === 'outward' ||
+        particleData.direction === 'random' ||
+        particleData.direction === 'forward'
+          ? particleData.direction
+          : preset?.direction === 'down' ||
+              preset?.direction === 'outward' ||
+              preset?.direction === 'random' ||
+              preset?.direction === 'forward'
+            ? preset.direction
+            : 'up';
+      const speedMin = Math.max(
+        0,
+        readParticleNumber(particleData.speedMin, readParticleNumber(preset?.speedMin, 0.6))
+      );
+      const speedMax = Math.max(
+        speedMin,
+        readParticleNumber(particleData.speedMax, readParticleNumber(preset?.speedMax, 1.8))
+      );
+      const lifetimeMin = Math.max(
+        0.05,
+        readParticleNumber(
+          particleData.lifetimeMin,
+          readParticleNumber(
+            preset?.lifetimeMin,
+            Math.max(0.2, readParticleNumber(particleData.duration, 3) * 0.35)
+          )
+        )
+      );
+      const lifetimeMax = Math.max(
+        lifetimeMin,
+        readParticleNumber(
+          particleData.lifetimeMax,
+          readParticleNumber(
+            preset?.lifetimeMax,
+            Math.max(lifetimeMin, readParticleNumber(particleData.duration, 3))
+          )
+        )
+      );
 
       return {
-        rate: Math.max(0, typeof particleData.rate === 'number' ? particleData.rate : 24),
+        presetId: presetEntry?.id ?? null,
+        simulationBackend:
+          particleData.simulationBackend === 'cpu' || particleData.simulationBackend === 'gpu'
+            ? (particleData.simulationBackend as ParticlePreviewBackendPreference)
+            : 'auto',
+        rate: Math.max(0, readParticleNumber(particleData.rate, readParticleNumber(preset?.rate, 24))),
         maxParticles: Math.max(
           8,
-          Math.min(4000, Math.round(typeof particleData.maxParticles === 'number' ? particleData.maxParticles : 800))
+          Math.min(
+            4000,
+            Math.round(
+              readParticleNumber(
+                particleData.maxParticles,
+                readParticleNumber(preset?.maxParticles, 800)
+              )
+            )
+          )
         ),
-        duration: Math.max(0.1, typeof particleData.duration === 'number' ? particleData.duration : 3),
-        looping: particleData.looping !== false,
+        burstCount: Math.max(
+          0,
+          Math.round(readParticleNumber(particleData.burstCount, readParticleNumber(preset?.burstCount, 0)))
+        ),
+        duration: Math.max(
+          0.1,
+          readParticleNumber(
+            particleData.duration,
+            Math.max(lifetimeMax, readParticleNumber(preset?.lifetimeMax, 3))
+          )
+        ),
+        looping:
+          typeof particleData.looping === 'boolean'
+            ? particleData.looping
+            : preset
+              ? readParticleNumber(preset.rate, 0) > 0
+              : true,
         shape,
-        radius: Math.max(0, typeof particleData.radius === 'number' ? particleData.radius : 0.35),
+        radius: Math.max(0, readParticleNumber(particleData.radius, readParticleNumber(preset?.radius, 0.35))),
         speedMin,
         speedMax,
-        startSizeMin: Math.max(0.01, typeof particleData.startSizeMin === 'number' ? particleData.startSizeMin : 0.12),
-        startSizeMax: Math.max(0.01, typeof particleData.startSizeMax === 'number' ? particleData.startSizeMax : 0.24),
-        endSizeMin: Math.max(0, typeof particleData.endSizeMin === 'number' ? particleData.endSizeMin : 0),
-        endSizeMax: Math.max(0, typeof particleData.endSizeMax === 'number' ? particleData.endSizeMax : 0.08),
-        gravity: typeof particleData.gravity === 'number' ? particleData.gravity : -0.6,
+        direction,
+        lifetimeMin,
+        lifetimeMax,
+        startSizeMin: Math.max(
+          0.01,
+          readParticleNumber(particleData.startSizeMin, readParticleNumber(preset?.startSizeMin, 0.12))
+        ),
+        startSizeMax: Math.max(
+          0.01,
+          readParticleNumber(particleData.startSizeMax, readParticleNumber(preset?.startSizeMax, 0.24))
+        ),
+        endSizeMin: Math.max(
+          0,
+          readParticleNumber(particleData.endSizeMin, readParticleNumber(preset?.endSizeMin, 0))
+        ),
+        endSizeMax: Math.max(
+          0,
+          readParticleNumber(particleData.endSizeMax, readParticleNumber(preset?.endSizeMax, 0.08))
+        ),
+        gravity: readParticleNumber(particleData.gravity, readParticleNumber(preset?.gravity, -0.6)),
+        drag: Math.max(0, readParticleNumber(particleData.drag, readParticleNumber(preset?.drag, 0))),
         blendMode,
-        startColor: readParticleColor(particleData.startColor, new THREE.Color(1, 0.78, 0.22)),
-        endColor: readParticleColor(particleData.endColor, new THREE.Color(1, 0.24, 0.08)),
+        startColor: readParticleColor(
+          particleData.startColor,
+          preset?.startColor ?? new THREE.Color(1, 0.78, 0.22)
+        ),
+        endColor: readParticleColor(
+          particleData.endColor,
+          preset?.endColor ?? new THREE.Color(1, 0.24, 0.08)
+        ),
+        startAlpha: Math.max(
+          0,
+          Math.min(1, readParticleNumber(particleData.startAlpha, readParticleNumber(preset?.startAlpha, 1)))
+        ),
+        endAlpha: Math.max(
+          0,
+          Math.min(1, readParticleNumber(particleData.endAlpha, readParticleNumber(preset?.endAlpha, 0)))
+        ),
+        noiseStrength: Math.max(
+          0,
+          readParticleNumber(particleData.noiseStrength, readParticleNumber(preset?.noiseStrength, 0))
+        ),
+        noiseFrequency: Math.max(
+          0.01,
+          readParticleNumber(particleData.noiseFrequency, readParticleNumber(preset?.noiseFrequency, 1))
+        ),
       };
     };
 
@@ -206,60 +336,51 @@ export function useSceneEntitySync(params: {
       const config = readParticleConfig(entity);
       if (!config) return null;
       return [
+        config.presetId ?? 'custom',
+        config.simulationBackend,
         config.rate,
         config.maxParticles,
+        config.burstCount,
         config.duration,
         config.looping ? 1 : 0,
         config.shape,
         config.radius,
         config.speedMin,
         config.speedMax,
+        config.direction,
+        config.lifetimeMin,
+        config.lifetimeMax,
         config.startSizeMin,
         config.startSizeMax,
         config.endSizeMin,
         config.endSizeMax,
         config.gravity,
+        config.drag,
         config.blendMode,
         config.startColor.getHexString(),
         config.endColor.getHexString(),
+        config.startAlpha,
+        config.endAlpha,
+        config.noiseStrength,
+        config.noiseFrequency,
       ].join(':');
     };
 
     const createParticleHelper = (entity: Entity) => {
       const config = readParticleConfig(entity);
       if (!config) return null;
-
-      const emitter = new ParticleEmitter({
-        rate: config.rate,
-        maxParticles: config.maxParticles,
-        lifetimeMin: Math.max(0.2, config.duration * 0.35),
-        lifetimeMax: Math.max(0.3, config.duration),
-        shape: config.shape,
-        radius: config.radius,
-        speedMin: config.speedMin,
-        speedMax: config.speedMax,
-        direction: 'up',
-        startSizeMin: config.startSizeMin,
-        startSizeMax: config.startSizeMax,
-        endSizeMin: config.endSizeMin,
-        endSizeMax: config.endSizeMax,
-        startColor: config.startColor,
-        endColor: config.endColor,
-        gravity: config.gravity,
-        blendMode: config.blendMode,
-        emitOnWake: true,
-      });
-
-      const helper = emitter.object3D;
+      const previewHandle = createParticlePreviewHandle(config, particlePreviewRuntime);
+      const helper = previewHandle.object3D;
       helper.name = '__particle_helper';
       helper.frustumCulled = false;
       helper.renderOrder = 3;
       helper.userData.particleSignature = buildParticleSignature(entity);
       helper.userData.particlePreview = {
-        emitter,
+        emitter: previewHandle,
         elapsed: 0,
         duration: config.duration,
         looping: config.looping,
+        backend: previewHandle.backend,
       };
       return helper;
     };

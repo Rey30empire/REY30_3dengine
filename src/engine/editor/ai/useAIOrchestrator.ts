@@ -116,34 +116,34 @@ export function useAIOrchestrator(params: {
     const stages: OrchestratorStage[] = [
       {
         id: 'analyze',
-        title: 'Analizar objetivo del usuario',
+        title: 'Entender tu pedido',
         agentType: 'orchestrator',
         commands: [],
       },
     ];
 
-    if (wantsDelete) {
-      stages.push({
-        id: 'cleanup',
-        title: 'Limpiar elementos de escena',
-        agentType: 'world_builder',
-        commands: [command],
-      });
-    } else {
-      if (wantsMaze) {
+      if (wantsDelete) {
         stages.push({
-          id: 'maze_scene',
-          title: 'Construir escena de laberinto',
+          id: 'cleanup',
+          title: 'Limpiar la escena',
           agentType: 'world_builder',
-          commands: ['crea una escena de laberinto'],
+          commands: [command],
         });
-      } else if (wantsScene || wantsTerrain || shouldForceSceneBase) {
-        stages.push({
-          id: 'scene_setup',
-          title: 'Crear base de escena',
-          agentType: wantsTerrain ? 'terrain' : 'world_builder',
-          commands: [wantsTerrain ? 'crea una escena base con terreno' : 'crea una escena base'],
-        });
+      } else {
+        if (wantsMaze) {
+          stages.push({
+            id: 'maze_scene',
+            title: 'Preparar el mundo',
+            agentType: 'world_builder',
+            commands: ['crea una escena de laberinto'],
+          });
+        } else if (wantsScene || wantsTerrain || shouldForceSceneBase) {
+          stages.push({
+            id: 'scene_setup',
+            title: 'Preparar la base de la escena',
+            agentType: wantsTerrain ? 'terrain' : 'world_builder',
+            commands: [wantsTerrain ? 'crea una escena base con terreno' : 'crea una escena base'],
+          });
       }
 
       const entityCommands: string[] = [];
@@ -174,7 +174,7 @@ export function useAIOrchestrator(params: {
       if (entityCommands.length > 0) {
         stages.push({
           id: 'entities',
-          title: 'Crear entidades principales',
+          title: 'Crear los elementos principales',
           agentType: 'model_generator',
           commands: entityCommands,
         });
@@ -183,7 +183,7 @@ export function useAIOrchestrator(params: {
       if (wantsJump || (isAIFirst && hasGameKeyword)) {
         stages.push({
           id: 'gameplay',
-          title: 'Configurar gameplay y físicas',
+          title: 'Ajustar interacción y movimiento',
           agentType: 'gameplay',
           commands: [wantsCameraJump ? 'aplica fisica de salto a camara' : 'aplica fisica de salto'],
         });
@@ -192,14 +192,17 @@ export function useAIOrchestrator(params: {
 
     stages.push({
       id: 'validation',
-      title: 'Validar escena y estado final',
+      title: 'Revisión final',
       agentType: 'optimization',
       commands: [],
     });
 
     addChatMessage({
       role: 'assistant',
-      content: `🧩 **Pipeline automático iniciado**\n\nOrden: "${command}"\nEtapas: ${stages.map((stage) => stage.title).join(' → ')}`,
+      content:
+        `🧩 **Creación iniciada**\n\n` +
+        `Orden: "${command}"\n` +
+        `Voy a preparar una primera versión paso a paso.`,
       metadata: { agentType: 'orchestrator' },
     });
     onPipelineStart?.({
@@ -237,40 +240,19 @@ export function useAIOrchestrator(params: {
       try {
         const output: string[] = [];
         if (stage.id === 'analyze') {
-          output.push('✓ Prompt analizado y desglosado');
-          output.push(`✓ Intenciones detectadas: ${[
-            wantsDelete ? 'eliminar' : null,
-            wantsMaze ? 'laberinto' : null,
-            wantsScene ? 'escena' : null,
-            wantsTerrain ? 'terreno' : null,
-            wantsCharacter ? 'personaje' : null,
-            wantsEnemy ? 'enemigo' : null,
-            wantsWeapon ? 'arma' : null,
-            wantsJump ? 'salto' : null,
-          ].filter(Boolean).join(', ') || 'general'}`);
+          output.push('✓ Pedido interpretado');
           output.push(
-            `✓ Modo de ejecución: ${
-              isAIFirst
-                ? 'AI First (prompt único + pipeline completo)'
-                : 'Hybrid (IA + edición humana)'
+            `✓ Modo de trabajo: ${
+              isAIFirst ? 'AI First (creación automática)' : 'Hybrid (IA + ajustes manuales)'
             }`
           );
         } else if (stage.id === 'validation') {
           const state = useEngineStore.getState();
-          output.push(`✓ Entidades totales: ${state.entities.size}`);
-          output.push(`✓ Selección activa: ${state.editor.selectedEntities.length}`);
+          output.push(`✓ Elementos creados: ${state.entities.size}`);
           output.push(`✓ Escenas disponibles: ${state.scenes.length}`);
           output.push(...enforceAIGenerationContract('ai'));
           const report = runReyPlayCompile();
-          output.push(`✓ Composer/Runtime: ${report.summary}`);
-          if (!report.ok && report.diagnostics.length > 0) {
-            output.push(
-              `⚠️ Diagnósticos: ${report.diagnostics
-                .slice(0, 2)
-                .map((item) => item.code)
-                .join(', ')}`
-            );
-          }
+          output.push(report.ok ? '✓ Revisión final sin bloqueos' : '⚠️ Revisión final con ajustes pendientes');
         } else {
           for (const stageCommand of stage.commands) {
             const commandResults = await createBasicGameElement(stageCommand, { silent: true });
@@ -286,7 +268,6 @@ export function useAIOrchestrator(params: {
         updateAgentStatus(agentId, 'idle');
 
         stageSummaries.push(`✓ ${stage.title}`);
-        output.slice(0, 3).forEach((line) => stageSummaries.push(`  ${line}`));
         onPipelineStage?.({
           index: stageIndex + 1,
           totalStages: stages.length,
@@ -316,8 +297,8 @@ export function useAIOrchestrator(params: {
     addChatMessage({
       role: 'assistant',
       content: failed
-        ? `⚠️ **Pipeline con incidencias**\n${stageSummaries.join('\n')}`
-        : `✅ **Pipeline completado**\n${stageSummaries.join('\n')}`,
+        ? `⚠️ **La creación terminó con ajustes pendientes**\n${stageSummaries.join('\n')}`
+        : `✅ **Creación completada**\n${stageSummaries.join('\n')}`,
       metadata: { agentType: 'orchestrator' },
     });
 

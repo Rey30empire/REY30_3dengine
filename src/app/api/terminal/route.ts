@@ -1,97 +1,193 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import path from 'path';
-import { authErrorToResponse, requireSession } from '@/lib/security/auth';
-import { getClientIp } from '@/lib/security/client-ip';
+import {
+  authErrorToResponse,
+  logSecurityEvent,
+  requireSession,
+} from '@/lib/security/auth';
+import {
+  isAdminTerminalEnabled,
+  isAdminTerminalRemoteEnabled,
+  isAdminTerminalRouteAvailable,
+  isLocalAdminTerminalRequest,
+} from '@/lib/security/admin-terminal-policy';
+import {
+  executeAdminTerminalAction,
+  getAdminTerminalActionById,
+  getAdminTerminalActionCatalog,
+} from '@/lib/server/admin-terminal-actions';
 
-const execAsync = promisify(exec);
-const DEFAULT_TIMEOUT = 15_000;
-const MAX_OUTPUT = 200_000; // 200 KB
-const TERMINAL_ENABLED = process.env.REY30_ENABLE_TERMINAL_API === 'true';
-const TERMINAL_ENABLE_REMOTE = (process.env.REY30_ENABLE_TERMINAL_API_REMOTE || '').trim().toLowerCase() === 'true';
-function isLoopbackHost(value: string): boolean {
-  const host = (value || '').trim().toLowerCase();
-  if (!host) return false;
-  if (host === 'localhost' || host === '::1' || host === '[::1]') return true;
-  return host.startsWith('127.');
-}
-function isLoopbackIp(value: string): boolean {
-  const normalized = (value || '').trim().toLowerCase();
-  if (!normalized) return false;
-  if (normalized === '::1' || normalized === '[::1]') return true;
-  return normalized.startsWith('127.');
-}
-function isLocalTerminalRequest(request: NextRequest): boolean {
-  if (isLoopbackHost(request.nextUrl.hostname)) return true;
-  const clientIp = getClientIp(request);
-  return !!clientIp && isLoopbackIp(clientIp);
-}
-
-export async function POST(request: NextRequest) {
-  if (!TERMINAL_ENABLED) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+async function authorizeTerminalRequest(
+  request: NextRequest,
+  auditAction: 'admin.terminal.catalog' | 'admin.terminal.execute'
+): Promise<{ userId: string }> {
+  if (!isAdminTerminalEnabled()) {
+    throw new Error('NOT_FOUND');
   }
 
-  if (!TERMINAL_ENABLE_REMOTE && !isLocalTerminalRequest(request)) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (!isAdminTerminalRemoteEnabled() && !isLocalAdminTerminalRequest(request)) {
+    throw new Error('NOT_FOUND');
   }
 
-  try {
-    await requireSession(request, 'OWNER');
-  } catch (error) {
-    return authErrorToResponse(error);
+  if (!isAdminTerminalRouteAvailable(request)) {
+    throw new Error('NOT_FOUND');
   }
 
+  const user = await requireSession(request, 'OWNER');
   const adminToken = (process.env.REY30_ADMIN_TOKEN || '').trim();
   if (adminToken) {
     const provided = request.headers.get('x-rey30-admin-token');
     if (provided !== adminToken) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      await logSecurityEvent({
+        request,
+        userId: user.id,
+        action: auditAction,
+        status: 'denied',
+        metadata: { reason: 'admin_token_mismatch' },
+      });
+      throw new Error('ADMIN_TOKEN_REQUIRED');
     }
   }
 
+  return { userId: user.id };
+}
+
+function notFoundResponse() {
+  return NextResponse.json({ error: 'Not found' }, { status: 404 });
+}
+
+function actionDeniedResponse(message: string, status = 400) {
+  return NextResponse.json({ ok: false, error: message }, { status });
+}
+
+export async function GET(request: NextRequest) {
   try {
-    const body = await request.json();
-    const cmd: string | undefined = body?.cmd;
-    const cwd: string | undefined = body?.cwd;
-    const timeout: number | undefined = body?.timeout;
-
-    if (!cmd || typeof cmd !== 'string' || cmd.length > 500) {
-      return NextResponse.json({ error: 'cmd is required' }, { status: 400 });
-    }
-
-    const safeCwd = cwd && typeof cwd === 'string' ? path.resolve(process.cwd(), cwd) : process.cwd();
-    const rel = path.relative(process.cwd(), safeCwd);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      return NextResponse.json({ error: 'cwd must stay inside project root' }, { status: 400 });
-    }
-
-    const result = await execAsync(cmd, {
-      cwd: safeCwd,
-      timeout: Math.min(timeout ?? DEFAULT_TIMEOUT, 60_000),
-      maxBuffer: MAX_OUTPUT,
-      windowsHide: true,
+    const auth = await authorizeTerminalRequest(request, 'admin.terminal.catalog');
+    await logSecurityEvent({
+      request,
+      userId: auth.userId,
+      action: 'admin.terminal.catalog',
+      status: 'allowed',
+      metadata: { actionCount: getAdminTerminalActionCatalog().length },
     });
-
     return NextResponse.json({
       ok: true,
-      cmd,
-      cwd: safeCwd,
-      stdout: result.stdout ?? '',
-      stderr: result.stderr ?? '',
-      code: 0,
+      actions: getAdminTerminalActionCatalog(),
     });
-  } catch (error: unknown) {
-    const err = error as { message?: string; stdout?: string; stderr?: string; code?: number };
-    return NextResponse.json({
-      ok: false,
-      error: String(err?.message || 'Command failed'),
-      stdout: err?.stdout ?? '',
-      stderr: err?.stderr ?? '',
-      code: typeof err?.code === 'number' ? err.code : 1,
-    }, { status: 500 });
+  } catch (error) {
+    if (String(error).includes('NOT_FOUND')) {
+      return notFoundResponse();
+    }
+    if (String(error).includes('ADMIN_TOKEN_REQUIRED')) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    return authErrorToResponse(error);
   }
 }
 
+export async function POST(request: NextRequest) {
+  let actorUserId: string | null = null;
 
+  try {
+    const auth = await authorizeTerminalRequest(request, 'admin.terminal.execute');
+    actorUserId = auth.userId;
+  } catch (error) {
+    if (String(error).includes('NOT_FOUND')) {
+      return notFoundResponse();
+    }
+    if (String(error).includes('ADMIN_TOKEN_REQUIRED')) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    return authErrorToResponse(error);
+  }
+
+  try {
+    const body = (await request.json().catch(() => ({}))) as {
+      actionId?: string;
+      relativePath?: string;
+    };
+    const actionId = typeof body.actionId === 'string' ? body.actionId.trim() : '';
+    const relativePath =
+      typeof body.relativePath === 'string' ? body.relativePath.trim() : undefined;
+
+    if (!actionId) {
+      await logSecurityEvent({
+        request,
+        userId: actorUserId,
+        action: 'admin.terminal.execute',
+        status: 'denied',
+        metadata: { reason: 'missing_action_id' },
+      });
+      return actionDeniedResponse('actionId is required');
+    }
+
+    const action = getAdminTerminalActionById(actionId);
+    if (!action) {
+      await logSecurityEvent({
+        request,
+        userId: actorUserId,
+        action: 'admin.terminal.execute',
+        status: 'denied',
+        metadata: { reason: 'unknown_action', actionId },
+      });
+      return actionDeniedResponse('Unknown terminal action');
+    }
+
+    const startedAt = Date.now();
+    const result = await executeAdminTerminalAction({
+      actionId,
+      relativePath,
+    });
+
+    await logSecurityEvent({
+      request,
+      userId: actorUserId,
+      action: 'admin.terminal.execute',
+      target: actionId,
+      status: result.code === 0 ? 'allowed' : 'error',
+      metadata: {
+        commandPreview: action.commandPreview,
+        relativePath: relativePath || '.',
+        cwd: result.cwd,
+        code: result.code,
+        durationMs: Date.now() - startedAt,
+      },
+    });
+
+    const status = result.code === 0 ? 200 : 500;
+    return NextResponse.json(
+      {
+        ok: result.code === 0,
+        actionId: result.actionId,
+        label: result.label,
+        commandPreview: result.commandPreview,
+        cwd: result.cwd,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        code: result.code,
+      },
+      { status }
+    );
+  } catch (error: unknown) {
+    const message = String((error as { message?: string })?.message || error || 'Action failed');
+    const denied = message.includes('relativePath must stay inside project root');
+
+    await logSecurityEvent({
+      request,
+      userId: actorUserId,
+      action: 'admin.terminal.execute',
+      status: denied ? 'denied' : 'error',
+      metadata: { error: message },
+    });
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: message,
+        stdout: '',
+        stderr: '',
+        code: denied ? 1 : 1,
+      },
+      { status: denied ? 400 : 500 }
+    );
+  }
+}

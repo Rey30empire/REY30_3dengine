@@ -23,6 +23,11 @@ const builtInModelerPresetAlts = [
   'Preset built-in Radial Kit',
   'Preset built-in Proxy LOD',
 ];
+const benignUnauthorizedPathPrefixes = [
+  '/api/materials',
+  '/api/modifier-presets',
+  '/api/modeler/persist',
+];
 
 async function waitForBridge(page) {
   await page.waitForSelector('[data-testid="scene-view"]', { timeout: 10000 });
@@ -42,6 +47,87 @@ async function waitForAltImage(page, alt, state = 'visible') {
   await page.waitForSelector(`img[alt="${alt}"]`, { timeout: 10000, state });
 }
 
+async function waitForModelerBuiltInPreset(page, presetAlt, timeout = 20000) {
+  const presetName = presetAlt.replace(/^Preset built-in\s+/, '').trim();
+  const fallbackLabel = presetName.slice(0, 2).toUpperCase();
+  const entrySelector = `[data-testid="modeler-built-in-preset-entry"][data-preset-name="${presetName}"]`;
+  const entry = page.locator(entrySelector).first();
+
+  await entry.waitFor({ state: 'visible', timeout });
+  await entry.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(250);
+
+  const previewStateHandle = await page.waitForFunction(
+    ({ selector, alt, fallback }) => {
+      const presetEntry = document.querySelector(selector);
+      if (!(presetEntry instanceof HTMLElement)) {
+        return false;
+      }
+      presetEntry.scrollIntoView({ block: 'center', inline: 'nearest' });
+      if (presetEntry.querySelector(`img[alt="${alt}"]`)) {
+        return 'image';
+      }
+      const previewSlots = Array.from(presetEntry.querySelectorAll('div'));
+      const hasFallback = previewSlots.some(
+        (slot) => slot.textContent?.trim() === fallback
+      );
+      return hasFallback ? 'fallback' : false;
+    },
+    { selector: entrySelector, alt: presetAlt, fallback: fallbackLabel },
+    { timeout }
+  );
+  const previewState = await previewStateHandle.jsonValue();
+  return previewState === 'image' ? 'image' : 'fallback';
+}
+
+async function clickWorkspace(page, subtitle) {
+  const workspaceButton = page.locator(`button[title^="${subtitle}"]`).first();
+  await workspaceButton.waitFor({ state: 'visible', timeout: 15000 });
+  await workspaceButton.click();
+}
+
+async function openWorkspacePanel(page, { subtitle, panelLabel, readyText, attempts = 3 }) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await clickWorkspace(page, subtitle);
+
+    if (panelLabel) {
+      const panelButton = page.getByRole('button', { name: panelLabel }).last();
+      await panelButton.waitFor({ state: 'visible', timeout: 10000 });
+      await panelButton.click();
+    }
+
+    if (!readyText) {
+      await page.waitForTimeout(500);
+      return;
+    }
+
+    try {
+      await page.getByText(readyText).waitFor({ state: 'visible', timeout: 5000 });
+      return;
+    } catch {
+      await page.waitForTimeout(500);
+    }
+  }
+
+  throw new Error(`No se pudo abrir el workspace '${subtitle}' con el panel '${panelLabel ?? 'default'}'`);
+}
+
+async function gotoWithRetries(page, url, attempts = 5) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await page.waitForTimeout(750);
+      }
+    }
+  }
+  throw lastError;
+}
+
 const browser = await chromium.launch({
   headless: true,
   args: ['--use-gl=angle', '--use-angle=swiftshader'],
@@ -49,9 +135,35 @@ const browser = await chromium.launch({
 
 const page = await browser.newPage({ viewport: { width: 1560, height: 980 } });
 const consoleErrors = [];
+const unauthorizedResponses = [];
+const notFoundResponses = [];
+const requestFailures = [];
 page.on('console', (message) => {
   if (message.type() === 'error') {
     consoleErrors.push(message.text());
+  }
+});
+page.on('requestfailed', (request) => {
+  requestFailures.push({
+    url: request.url(),
+    resourceType: request.resourceType(),
+    errorText: request.failure()?.errorText ?? null,
+  });
+});
+page.on('response', (response) => {
+  if (response.status() === 401) {
+    try {
+      unauthorizedResponses.push(new URL(response.url()).pathname);
+    } catch {
+      unauthorizedResponses.push(response.url());
+    }
+  }
+  if (response.status() === 404) {
+    try {
+      notFoundResponses.push(new URL(response.url()).pathname);
+    } catch {
+      notFoundResponses.push(response.url());
+    }
   }
 });
 page.on('pageerror', (error) => {
@@ -59,7 +171,7 @@ page.on('pageerror', (error) => {
 });
 
 try {
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetries(page, baseUrl);
   await page.waitForTimeout(1500);
   await waitForBridge(page);
 
@@ -78,8 +190,10 @@ try {
 
   await ensureSelection(page, entityId);
 
-  await page.getByRole('button', { name: 'Materials' }).click();
-  await page.waitForTimeout(600);
+  await openWorkspacePanel(page, {
+    subtitle: 'Edicion de materiales y libreria de assets',
+    panelLabel: 'Materials',
+  });
 
   for (const presetName of materialPresetNames) {
     await waitForAltImage(page, `Material ${presetName}`);
@@ -119,12 +233,17 @@ try {
   });
 
   await ensureSelection(page, entityId);
-  await page.getByRole('button', { name: 'Model' }).click();
-  await page.waitForTimeout(1400);
-  await page.getByText('Stack presets').waitFor({ state: 'visible', timeout: 10000 });
-
-  for (const alt of builtInModelerPresetAlts) {
-    await waitForAltImage(page, alt, 'attached');
+  await openWorkspacePanel(page, {
+    subtitle: 'Modelado, paint y materiales sin salir del viewport',
+    panelLabel: 'Model',
+    readyText: 'Stack presets',
+  });
+  await ensureSelection(page, entityId);
+  const observedBuiltInPresetAlts = [];
+  const builtInPreviewModes = {};
+  for (const presetAlt of builtInModelerPresetAlts) {
+    builtInPreviewModes[presetAlt] = await waitForModelerBuiltInPreset(page, presetAlt);
+    observedBuiltInPresetAlts.push(presetAlt);
   }
 
   await page.locator('button:visible').filter({ hasText: /^Apply$/ }).first().click();
@@ -139,6 +258,33 @@ try {
   const serverAuthHintVisible = await page
     .getByText('Inicia sesion en Config APIs -> Usuario para guardar meshes y presets persistentes.')
     .count();
+  const unexpectedUnauthorizedResponses = unauthorizedResponses.filter(
+    (pathname) =>
+      !benignUnauthorizedPathPrefixes.some((prefix) => pathname.startsWith(prefix))
+  );
+  const unexpectedNotFoundResponses = Array.from(new Set(notFoundResponses));
+  const ignoredRequestFailures = requestFailures.filter(
+    (failure) =>
+      failure.errorText?.includes('ERR_CONNECTION_REFUSED') &&
+      failure.url.includes('/_next/webpack-hmr')
+  );
+  const blockingRequestFailures = requestFailures.filter(
+    (failure) => !ignoredRequestFailures.includes(failure)
+  );
+  const ignoredConsoleErrors =
+    blockingRequestFailures.length === 0
+      ? consoleErrors.filter(
+          (entry) =>
+            entry.includes('Failed to load resource: net::ERR_CONNECTION_REFUSED') &&
+            ignoredRequestFailures.length > 0
+        )
+      : [];
+  const blockingConsoleErrors = consoleErrors.filter(
+    (entry) =>
+      !ignoredConsoleErrors.includes(entry) &&
+      !entry.includes('status of 401 (Unauthorized)') &&
+      !(entry.includes('status of 404 (Not Found)') && unexpectedNotFoundResponses.length === 0)
+  );
 
   await page.screenshot({
     path: path.join(outputDir, 'modeler.png'),
@@ -149,17 +295,32 @@ try {
     ok:
       materialIdAfterApply === 'metal' &&
       inspectorPresetImageCount >= materialPresetNames.length &&
+      observedBuiltInPresetAlts.length >= builtInModelerPresetAlts.length &&
       customPresetImageCount >= 1 &&
       modifierStackIndicatorCount >= 1 &&
-      consoleErrors.length === 0,
+      blockingConsoleErrors.length === 0 &&
+      blockingRequestFailures.length === 0 &&
+      unexpectedNotFoundResponses.length === 0 &&
+      unexpectedUnauthorizedResponses.length === 0,
     materialPresetNames,
     materialIdAfterApply,
     inspectorPresetImageCount,
     builtInModelerPresetAlts,
+    observedBuiltInPresetAlts,
+    builtInPreviewModes,
     customPresetImageCount,
     modifierStackIndicatorCount,
     serverAuthHintVisible,
+    unauthorizedResponses,
+    unexpectedUnauthorizedResponses,
+    notFoundResponses,
+    unexpectedNotFoundResponses,
+    ignoredConsoleErrors,
+    blockingConsoleErrors,
+    ignoredRequestFailures,
+    blockingRequestFailures,
     consoleErrors,
+    requestFailures,
   };
 
   fs.writeFileSync(

@@ -94,16 +94,16 @@ export function HybridSceneSystemPanel() {
   const moduleCards = useMemo(
     () => [
       { title: 'Sistema de escenas cargables', status: 'base', text: 'Plantillas instantáneas + escena activa + asset de snapshot.' },
-      { title: 'Motor físico básico', status: 'base', text: 'Physics, rigidbody, collider y compile diagnostics ya conectados.' },
+      { title: 'Motor físico básico', status: 'base', text: 'Physics, rigidbody, collider y verificación de escena ya conectados.' },
       { title: 'Assets importables/exportables', status: 'base', text: 'Asset Browser + snapshots + paquetes de build/export.' },
       { title: 'Adaptación automática de assets externos', status: 'hook', text: 'Se registran placeholders para scripts, texturas y props entrantes.' },
       { title: 'Biblioteca reutilizable', status: 'base', text: 'Cada bloque que agregas queda como asset reutilizable o script base.' },
       { title: 'Maniquíes base configurables', status: 'base', text: 'Player starter y prefabs base listos para iterar.' },
       { title: 'Subida de imagen como textura', status: 'hook', text: 'Texturas IA/manuales terminan registradas en assets.' },
-      { title: 'Pintado dinámico 3D', status: 'roadmap', text: 'Queda señalado como módulo siguiente dentro del pipeline.' },
+      { title: 'Pintado dinámico 3D', status: 'roadmap', text: 'Queda señalado como modulo siguiente dentro del editor.' },
       { title: 'Integración Battle Engine', status: 'base', text: 'Armas, enemigos y habilidades quedan registrados en runtime de batalla.' },
-      { title: 'Versionado seguro', status: 'base', text: 'Compile + manifest + snapshot de escena para revisar cambios.' },
-      { title: 'Arquitectura modular', status: 'base', text: 'Panel separado, scribs por objeto y compile desacoplado.' },
+      { title: 'Versionado seguro', status: 'base', text: 'Revisión + manifest + snapshot de escena para seguir cambios.' },
+      { title: 'Arquitectura modular', status: 'base', text: 'Panel separado, scribs por objeto y verificación desacoplada.' },
     ],
     []
   );
@@ -127,12 +127,12 @@ export function HybridSceneSystemPanel() {
 
     if (!result.ok) {
       if ((result.status === 401 || result.status === 403) && !scriptAuthWarnRef.current) {
-        consoleManager.warn('No se pudo persistir script generado: inicia sesión para usar /api/scripts.');
+        consoleManager.warn('No se pudo guardar el script generado: inicia sesión para habilitar la biblioteca de scripts.');
         scriptAuthWarnRef.current = true;
         return result;
       }
       if (!scriptPersistWarnRef.current) {
-        consoleManager.warn(`Error persistiendo script generado (${result.error || `HTTP ${result.status}`}).`);
+        consoleManager.warn(`No se pudo guardar el script generado (${result.error || `HTTP ${result.status}`}).`);
         scriptPersistWarnRef.current = true;
       }
       return result;
@@ -545,14 +545,14 @@ export function HybridSceneSystemPanel() {
           <section className="rounded-lg border border-slate-700 bg-slate-950/60 p-3 space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <h4 className="text-xs uppercase text-slate-400">Compilar y revisar</h4>
-                <p className="text-[11px] text-slate-500">Si falla, el error queda visible en consola y reporte.</p>
+                <h4 className="text-xs uppercase text-slate-400">Verificar y revisar</h4>
+                <p className="text-[11px] text-slate-500">Si algo falla, el detalle queda visible en consola y reporte.</p>
               </div>
               <Play className="h-4 w-4 text-emerald-300" />
             </div>
             <Button className="w-full" onClick={compileWorkflow}>
               <Upload className="mr-1 h-3 w-3" />
-              Compilar flujo HB
+              Verificar flujo HB
             </Button>
             <Button className="w-full" variant="secondary" onClick={quickPlay}>
               <Play className="mr-1 h-3 w-3" />

@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
+import { getDistributedRateLimitConfig } from './capacity-policy';
+import { reserveIntegrationNonce } from '@/lib/server/external-integration-store';
 
 type IntegrationCredential = {
   id: string;
@@ -16,10 +18,6 @@ export type VerifiedIntegration = {
 
 const DEFAULT_MAX_SKEW_SECONDS = 300;
 
-declare global {
-  var __rey30IntegrationNonceStore: Map<string, number> | undefined;
-}
-
 class IntegrationAuthError extends Error {
   readonly status: number;
   readonly code: string;
@@ -29,13 +27,6 @@ class IntegrationAuthError extends Error {
     this.status = status;
     this.code = code;
   }
-}
-
-function getNonceStore(): Map<string, number> {
-  if (!globalThis.__rey30IntegrationNonceStore) {
-    globalThis.__rey30IntegrationNonceStore = new Map<string, number>();
-  }
-  return globalThis.__rey30IntegrationNonceStore;
 }
 
 function getMaxSkewSeconds(): number {
@@ -179,25 +170,101 @@ function assertFreshTimestamp(timestampRaw: string): number {
   return Math.floor(timestamp);
 }
 
-function assertNonceUnused(integrationId: string, nonce: string, timestampSeconds: number): void {
-  const store = getNonceStore();
-  const nowMs = Date.now();
+function buildNonceStoreKey(integrationId: string, nonce: string): string {
+  return sha256Hex(`${integrationId}:${nonce}`);
+}
 
-  for (const [key, expiresAt] of store.entries()) {
-    if (expiresAt <= nowMs) {
-      store.delete(key);
-    }
+async function reserveDistributedNonce(params: {
+  integrationId: string;
+  nonce: string;
+  expiresAt: number;
+}): Promise<{ reserved: boolean } | null> {
+  const config = getDistributedRateLimitConfig();
+  if (!config) return null;
+
+  const ttlMs = Math.max(1_000, params.expiresAt - Date.now());
+  const endpoint = `${config.url}/pipeline`;
+  const nonceKey = `rey30:integration_nonce:${buildNonceStoreKey(params.integrationId, params.nonce)}`;
+
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([
+        ['SET', nonceKey, String(params.expiresAt), 'PX', ttlMs, 'NX'],
+      ]),
+      cache: 'no-store',
+    });
+  } catch (error) {
+    throw new IntegrationAuthError(
+      503,
+      'nonce_store_unavailable',
+      'Distributed integration nonce store unavailable.'
+    );
   }
 
-  const nonceKey = `${integrationId}:${nonce}`;
-  if (store.has(nonceKey)) {
-    throw new IntegrationAuthError(401, 'replay_detected', 'Integration nonce has already been used.');
+  if (!response.ok) {
+    throw new IntegrationAuthError(
+      503,
+      'nonce_store_unavailable',
+      'Distributed integration nonce store unavailable.'
+    );
   }
 
+  const payload = (await response.json().catch(() => null)) as Array<{ result?: unknown; error?: unknown }> | null;
+  const command = payload?.[0];
+  if (command?.error) {
+    throw new IntegrationAuthError(
+      503,
+      'nonce_store_unavailable',
+      'Distributed integration nonce store unavailable.'
+    );
+  }
+
+  if (command?.result === 'OK') {
+    return { reserved: true };
+  }
+
+  if (command?.result === null) {
+    return { reserved: false };
+  }
+
+  throw new IntegrationAuthError(
+    503,
+    'nonce_store_unavailable',
+    'Distributed integration nonce store unavailable.'
+  );
+}
+
+async function assertNonceUnused(integrationId: string, nonce: string, timestampSeconds: number): Promise<void> {
   const maxSkewMs = getMaxSkewSeconds() * 1000;
   const timestampMs = timestampSeconds * 1000;
-  const expiresAt = Math.max(nowMs + maxSkewMs, timestampMs + maxSkewMs);
-  store.set(nonceKey, expiresAt);
+  const expiresAt = Math.max(Date.now() + maxSkewMs, timestampMs + maxSkewMs);
+
+  const distributedReservation = await reserveDistributedNonce({
+    integrationId,
+    nonce,
+    expiresAt,
+  });
+  if (distributedReservation) {
+    if (!distributedReservation.reserved) {
+      throw new IntegrationAuthError(401, 'replay_detected', 'Integration nonce has already been used.');
+    }
+    return;
+  }
+
+  const fileReservation = await reserveIntegrationNonce({
+    integrationId,
+    nonceKey: buildNonceStoreKey(integrationId, nonce),
+    expiresAt,
+  });
+  if (!fileReservation.reserved) {
+    throw new IntegrationAuthError(401, 'replay_detected', 'Integration nonce has already been used.');
+  }
 }
 
 function getCredentialById(id: string): IntegrationCredential | null {
@@ -218,11 +285,11 @@ function sanitizeSignature(value: string): string {
   return normalized;
 }
 
-export function authenticateIntegrationRequest(params: {
+export async function authenticateIntegrationRequest(params: {
   request: NextRequest;
   rawBody: string;
   requiredScope: string;
-}): VerifiedIntegration {
+}): Promise<VerifiedIntegration> {
   const { request, rawBody, requiredScope } = params;
 
   const configured = getConfiguredCredentials();
@@ -265,7 +332,7 @@ export function authenticateIntegrationRequest(params: {
     throw new IntegrationAuthError(401, 'invalid_signature', 'Invalid integration signature.');
   }
 
-  assertNonceUnused(integrationId, nonce, timestampSeconds);
+  await assertNonceUnused(integrationId, nonce, timestampSeconds);
 
   return {
     id: credential.id,

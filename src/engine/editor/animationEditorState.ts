@@ -89,6 +89,69 @@ export interface NlaStrip {
   muted: boolean;
 }
 
+export interface AnimatorPoseBoneSnapshot {
+  boneId: string;
+  restPosition: EditableVec3;
+  length: number;
+}
+
+export interface AnimatorPoseShapeKeySnapshot {
+  shapeKeyId: string;
+  weight: number;
+}
+
+export interface AnimatorPoseLibraryEntry {
+  id: string;
+  name: string;
+  createdAt: string;
+  bones: AnimatorPoseBoneSnapshot[];
+  shapeKeys: AnimatorPoseShapeKeySnapshot[];
+}
+
+export interface AnimationKeyframeClipboardKeyframe {
+  timeOffset: number;
+  value: AnimationEditorKeyframeValue;
+  easing: AnimationEditorKeyframe['easing'];
+}
+
+export interface AnimationKeyframeClipboardTrack {
+  trackId: string;
+  name: string;
+  path: string;
+  property: string;
+  type: AnimationEditorTrackType;
+  color: string;
+  keyframes: AnimationKeyframeClipboardKeyframe[];
+}
+
+export interface AnimationKeyframeClipboard {
+  sourceClipId: string;
+  sourceClipName: string;
+  rangeStart: number;
+  rangeEnd: number;
+  tracks: AnimationKeyframeClipboardTrack[];
+}
+
+export interface AnimationPoseClipboard {
+  sourceLabel: string;
+  bones: AnimatorPoseBoneSnapshot[];
+  shapeKeys: AnimatorPoseShapeKeySnapshot[];
+}
+
+export interface AnimationPosePasteOptions {
+  blend?: number;
+  offset?: Partial<EditableVec3> | null;
+}
+
+export interface AnimationRetargetResult {
+  state: AnimatorEditorState;
+  retargetedClipId: string | null;
+  matchedTrackCount: number;
+  skippedTrackCount: number;
+  positionScale: number;
+  normalizedPositionTrackCount: number;
+}
+
 export interface AnimatorEditorState {
   activeClipId: string | null;
   clips: AnimationEditorClip[];
@@ -97,6 +160,7 @@ export interface AnimatorEditorState {
   constraints: RigConstraint[];
   shapeKeys: ShapeKeyTarget[];
   nlaStrips: NlaStrip[];
+  poseLibrary: AnimatorPoseLibraryEntry[];
   poseMode: boolean;
   activeBoneId: string | null;
 }
@@ -111,6 +175,21 @@ const DEFAULT_SHAPE_KEYS: ShapeKeyTarget[] = [
   { id: 'sk_brow_up', name: 'BrowUp', category: 'cejas', weight: 0 },
   { id: 'sk_jaw_open', name: 'JawOpen', category: 'boca', weight: 0 },
 ];
+
+function estimateAnimatorRigHeight(bones: RigBone[]) {
+  if (bones.length === 0) {
+    return 1;
+  }
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  bones.forEach((bone) => {
+    minY = Math.min(minY, bone.restPosition.y);
+    maxY = Math.max(maxY, bone.restPosition.y + bone.length);
+  });
+  return Math.max(0.1, maxY - minY);
+}
+
+const DEFAULT_HUMANOID_RIG_HEIGHT = estimateAnimatorRigHeight(buildDefaultHumanoidRig());
 
 function clamp01(value: number | undefined, fallback = 0) {
   return Number.isFinite(value) ? Math.max(0, Math.min(1, value ?? fallback)) : fallback;
@@ -357,6 +436,57 @@ function normalizeNlaStrip(value: unknown, clipIds: Set<string>): NlaStrip | nul
   };
 }
 
+function normalizePoseLibraryEntry(value: unknown): AnimatorPoseLibraryEntry | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const bones = Array.isArray(record.bones)
+    ? record.bones
+        .map((entry) => {
+          const boneRecord = asRecord(entry);
+          if (!boneRecord || typeof boneRecord.boneId !== 'string') {
+            return null;
+          }
+          return {
+            boneId: boneRecord.boneId,
+            restPosition: parseVec3(boneRecord.restPosition, { x: 0, y: 0, z: 0 }),
+            length: Number.isFinite(boneRecord.length) ? Math.max(0.05, Number(boneRecord.length)) : 0.25,
+          };
+        })
+        .filter((entry): entry is AnimatorPoseBoneSnapshot => Boolean(entry))
+    : [];
+  const shapeKeys = Array.isArray(record.shapeKeys)
+    ? record.shapeKeys
+        .map((entry) => {
+          const shapeKeyRecord = asRecord(entry);
+          if (!shapeKeyRecord || typeof shapeKeyRecord.shapeKeyId !== 'string') {
+            return null;
+          }
+          return {
+            shapeKeyId: shapeKeyRecord.shapeKeyId,
+            weight: clamp01(Number(shapeKeyRecord.weight), 0),
+          };
+        })
+        .filter((entry): entry is AnimatorPoseShapeKeySnapshot => Boolean(entry))
+    : [];
+
+  return {
+    id:
+      typeof record.id === 'string' && record.id.trim().length > 0
+        ? record.id
+        : crypto.randomUUID(),
+    name:
+      typeof record.name === 'string' && record.name.trim().length > 0
+        ? record.name
+        : 'Pose',
+    createdAt:
+      typeof record.createdAt === 'string' && record.createdAt.trim().length > 0
+        ? record.createdAt
+        : new Date().toISOString(),
+    bones,
+    shapeKeys,
+  };
+}
+
 export function buildDefaultHumanoidRig(): RigBone[] {
   const bones: Array<Omit<RigBone, 'id'>> = [
     { name: 'Root', parentId: null, restPosition: { x: 0, y: 0, z: 0 }, length: 0.25 },
@@ -567,6 +697,7 @@ export function createDefaultAnimatorEditorState(entityName: string): AnimatorEd
         muted: false,
       },
     ],
+    poseLibrary: [],
     poseMode: true,
     activeBoneId: bones[1]?.id ?? null,
   };
@@ -623,6 +754,11 @@ export function normalizeAnimatorEditorState(
           .map((entry) => normalizeNlaStrip(entry, clipIds))
           .filter((entry): entry is NlaStrip => Boolean(entry))
       : [],
+    poseLibrary: Array.isArray(editor.poseLibrary)
+      ? editor.poseLibrary
+          .map((entry) => normalizePoseLibraryEntry(entry))
+          .filter((entry): entry is AnimatorPoseLibraryEntry => Boolean(entry))
+      : [],
     poseMode: editor.poseMode !== false,
     activeBoneId:
       typeof editor.activeBoneId === 'string' &&
@@ -656,9 +792,1070 @@ export function serializeAnimatorEditorState(
       constraints: state.constraints,
       shapeKeys: state.shapeKeys,
       nlaStrips: state.nlaStrips,
+      poseLibrary: state.poseLibrary,
       poseMode: state.poseMode,
       activeBoneId: state.activeBoneId,
     },
+  };
+}
+
+function clampTime(value: number, duration: number) {
+  return Math.max(0, Math.min(duration, value));
+}
+
+function cloneKeyframeValue(value: AnimationEditorKeyframeValue): AnimationEditorKeyframeValue {
+  if (typeof value === 'number') {
+    return value;
+  }
+  return { ...value };
+}
+
+function scaleKeyframeValue(
+  value: AnimationEditorKeyframeValue,
+  scale: number
+): AnimationEditorKeyframeValue {
+  if (typeof value === 'number') {
+    return value * scale;
+  }
+  if ('w' in value) {
+    return { ...value };
+  }
+  return {
+    x: value.x * scale,
+    y: value.y * scale,
+    z: value.z * scale,
+  };
+}
+
+function cloneKeyframe(keyframe: AnimationEditorKeyframe): AnimationEditorKeyframe {
+  return {
+    ...keyframe,
+    id: crypto.randomUUID(),
+    value: cloneKeyframeValue(keyframe.value),
+  };
+}
+
+function cloneTrack(track: AnimationEditorTrack): AnimationEditorTrack {
+  return {
+    ...track,
+    id: crypto.randomUUID(),
+    keyframes: track.keyframes.map((keyframe) => cloneKeyframe(keyframe)),
+  };
+}
+
+function sortTrackKeyframes(track: AnimationEditorTrack): AnimationEditorTrack {
+  return {
+    ...track,
+    keyframes: [...track.keyframes].sort((left, right) => left.time - right.time),
+  };
+}
+
+function updateActiveClipInState(
+  state: AnimatorEditorState,
+  updater: (clip: AnimationEditorClip) => AnimationEditorClip
+) {
+  const clipIndex = state.clips.findIndex((clip) => clip.id === state.activeClipId);
+  if (clipIndex < 0) {
+    return state;
+  }
+  const activeClip = state.clips[clipIndex];
+  const nextClip = updater(activeClip);
+  if (nextClip === activeClip) {
+    return state;
+  }
+  const clips = [...state.clips];
+  clips[clipIndex] = nextClip;
+  return {
+    ...state,
+    clips,
+  };
+}
+
+function buildDuplicatedClipName(state: AnimatorEditorState, clipName: string) {
+  const existingNames = new Set(state.clips.map((clip) => clip.name));
+  let candidate = `${clipName} Copy`;
+  let suffix = 2;
+  while (existingNames.has(candidate)) {
+    candidate = `${clipName} Copy ${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+export function findActiveAnimatorClip(state: AnimatorEditorState): AnimationEditorClip | null {
+  return state.clips.find((clip) => clip.id === state.activeClipId) ?? null;
+}
+
+export function findSelectedKeyframeTimeBounds(
+  state: AnimatorEditorState,
+  selectedKeyframeIds: Iterable<string>
+) {
+  const clip = findActiveAnimatorClip(state);
+  if (!clip) {
+    return null;
+  }
+  const selectedIds = new Set(selectedKeyframeIds);
+  if (selectedIds.size === 0) {
+    return null;
+  }
+  const times = clip.tracks.flatMap((track) =>
+    track.keyframes
+      .filter((keyframe) => selectedIds.has(keyframe.id))
+      .map((keyframe) => keyframe.time)
+  );
+  if (times.length === 0) {
+    return null;
+  }
+  return {
+    start: Math.min(...times),
+    end: Math.max(...times),
+  };
+}
+
+export function clampSelectedKeyframeDelta(
+  bounds: { start: number; end: number } | null,
+  duration: number,
+  deltaSeconds: number
+) {
+  if (!bounds) {
+    return 0;
+  }
+  return Math.max(-bounds.start, Math.min(deltaSeconds, duration - bounds.end));
+}
+
+export function duplicateActiveAnimationClip(state: AnimatorEditorState): AnimatorEditorState {
+  const clip = findActiveAnimatorClip(state);
+  if (!clip) {
+    return state;
+  }
+  const duplicatedClip: AnimationEditorClip = {
+    ...clip,
+    id: crypto.randomUUID(),
+    name: buildDuplicatedClipName(state, clip.name),
+    tracks: clip.tracks.map((track) => cloneTrack(track)),
+  };
+  return {
+    ...state,
+    activeClipId: duplicatedClip.id,
+    clips: [...state.clips, duplicatedClip],
+  };
+}
+
+export function reverseActiveAnimationClip(state: AnimatorEditorState): AnimatorEditorState {
+  return updateActiveClipInState(state, (clip) => ({
+    ...clip,
+    tracks: clip.tracks.map((track) =>
+      sortTrackKeyframes({
+        ...track,
+        keyframes: track.keyframes.map((keyframe) => ({
+          ...keyframe,
+          time: clampTime(clip.duration - keyframe.time, clip.duration),
+          value: cloneKeyframeValue(keyframe.value),
+        })),
+      })
+    ),
+  }));
+}
+
+export function trimActiveAnimationClipToRange(
+  state: AnimatorEditorState,
+  startTime: number,
+  endTime: number
+): AnimatorEditorState {
+  const clip = findActiveAnimatorClip(state);
+  if (!clip) {
+    return state;
+  }
+  const clampedStart = clampTime(Math.min(startTime, endTime), clip.duration);
+  const clampedEnd = clampTime(Math.max(startTime, endTime), clip.duration);
+  const nextDuration = Math.max(1 / clip.frameRate, clampedEnd - clampedStart);
+  const nextState = updateActiveClipInState(state, (target) => ({
+    ...target,
+    duration: nextDuration,
+    tracks: target.tracks.map((track) =>
+      sortTrackKeyframes({
+        ...track,
+        keyframes: track.keyframes
+          .filter(
+            (keyframe) =>
+              keyframe.time >= clampedStart - 1e-6 && keyframe.time <= clampedEnd + 1e-6
+          )
+          .map((keyframe) => ({
+            ...keyframe,
+            time: clampTime(keyframe.time - clampedStart, nextDuration),
+            value: cloneKeyframeValue(keyframe.value),
+          })),
+      })
+    ),
+  }));
+  return {
+    ...nextState,
+    nlaStrips: nextState.nlaStrips.map((strip) =>
+      strip.clipId === clip.id
+        ? {
+            ...strip,
+            end: strip.start + nextDuration,
+          }
+        : strip
+    ),
+  };
+}
+
+export function nudgeSelectedAnimationKeyframes(
+  state: AnimatorEditorState,
+  selectedKeyframeIds: Iterable<string>,
+  deltaSeconds: number
+): AnimatorEditorState {
+  const clip = findActiveAnimatorClip(state);
+  const bounds = findSelectedKeyframeTimeBounds(state, selectedKeyframeIds);
+  if (!clip || !bounds) {
+    return state;
+  }
+  const actualDelta = clampSelectedKeyframeDelta(bounds, clip.duration, deltaSeconds);
+  if (Math.abs(actualDelta) < 1e-6) {
+    return state;
+  }
+  const selectedIds = new Set(selectedKeyframeIds);
+  return updateActiveClipInState(state, (target) => ({
+    ...target,
+    tracks: target.tracks.map((track) =>
+      sortTrackKeyframes({
+        ...track,
+        keyframes: track.keyframes.map((keyframe) =>
+          selectedIds.has(keyframe.id)
+            ? {
+                ...keyframe,
+                time: clampTime(keyframe.time + actualDelta, target.duration),
+                value: cloneKeyframeValue(keyframe.value),
+              }
+            : keyframe
+        ),
+      })
+    ),
+  }));
+}
+
+export function scaleSelectedAnimationKeyframes(
+  state: AnimatorEditorState,
+  selectedKeyframeIds: Iterable<string>,
+  factor: number,
+  pivotTime: number
+): AnimatorEditorState {
+  const clip = findActiveAnimatorClip(state);
+  const bounds = findSelectedKeyframeTimeBounds(state, selectedKeyframeIds);
+  if (!clip || !bounds || !Number.isFinite(factor) || factor <= 0) {
+    return state;
+  }
+  const selectedIds = new Set(selectedKeyframeIds);
+  if (selectedIds.size < 2) {
+    return state;
+  }
+  const pivot = Math.max(bounds.start, Math.min(bounds.end, pivotTime));
+  const leftSpan = pivot - bounds.start;
+  const rightSpan = bounds.end - pivot;
+  const maxGrowLeft = leftSpan > 1e-6 ? pivot / leftSpan : Number.POSITIVE_INFINITY;
+  const maxGrowRight =
+    rightSpan > 1e-6 ? (clip.duration - pivot) / rightSpan : Number.POSITIVE_INFINITY;
+  const maxGrow = Math.min(maxGrowLeft, maxGrowRight);
+  const effectiveFactor = factor > 1 ? Math.min(factor, maxGrow) : Math.max(0.05, factor);
+  if (!Number.isFinite(effectiveFactor) || effectiveFactor <= 0) {
+    return state;
+  }
+  return updateActiveClipInState(state, (target) => ({
+    ...target,
+    tracks: target.tracks.map((track) =>
+      sortTrackKeyframes({
+        ...track,
+        keyframes: track.keyframes.map((keyframe) =>
+          selectedIds.has(keyframe.id)
+            ? {
+                ...keyframe,
+                time: clampTime(
+                  pivot + (keyframe.time - pivot) * effectiveFactor,
+                  target.duration
+                ),
+                value: cloneKeyframeValue(keyframe.value),
+              }
+            : keyframe
+        ),
+      })
+    ),
+  }));
+}
+
+export function offsetAnimationNlaStrip(
+  state: AnimatorEditorState,
+  stripId: string,
+  deltaSeconds: number
+): AnimatorEditorState {
+  const strip = state.nlaStrips.find((entry) => entry.id === stripId);
+  if (!strip) {
+    return state;
+  }
+  const actualDelta = Math.max(-strip.start, deltaSeconds);
+  if (Math.abs(actualDelta) < 1e-6) {
+    return state;
+  }
+  return {
+    ...state,
+    nlaStrips: state.nlaStrips.map((entry) =>
+      entry.id === stripId
+        ? {
+            ...entry,
+            start: entry.start + actualDelta,
+            end: entry.end + actualDelta,
+          }
+        : entry
+    ),
+  };
+}
+
+function buildNextPoseLibraryName(state: AnimatorEditorState) {
+  const existingNames = new Set(state.poseLibrary.map((entry) => entry.name));
+  let index = state.poseLibrary.length + 1;
+  let candidate = `Pose ${index}`;
+  while (existingNames.has(candidate)) {
+    index += 1;
+    candidate = `Pose ${index}`;
+  }
+  return candidate;
+}
+
+function clonePoseLibraryEntry(entry: AnimatorPoseLibraryEntry): AnimatorPoseLibraryEntry {
+  return {
+    ...entry,
+    bones: entry.bones.map((bone) => ({
+      ...bone,
+      restPosition: { ...bone.restPosition },
+    })),
+    shapeKeys: entry.shapeKeys.map((shapeKey) => ({ ...shapeKey })),
+  };
+}
+
+function buildTrackNameFromPath(path: string, property: string) {
+  const segments = path.split('/');
+  const leaf = segments[segments.length - 1] || path;
+  return `${leaf}.${property.replace('.', '_')}`;
+}
+
+function inferTrackTypeFromProperty(property: string): AnimationEditorTrackType {
+  if (property.startsWith('rotation.')) return 'rotation';
+  if (property.startsWith('scale.')) return 'scale';
+  if (property.startsWith('shapeKey.')) return 'shapeKey';
+  if (property.startsWith('position.')) return 'position';
+  return 'custom';
+}
+
+function normalizeBoneNameToken(name: string) {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function inferHumanoidSlot(name: string):
+  | 'root'
+  | 'spine'
+  | 'chest'
+  | 'head'
+  | 'arm_l'
+  | 'arm_r'
+  | 'leg_l'
+  | 'leg_r'
+  | 'hand_l'
+  | 'hand_r'
+  | null {
+  const normalized = normalizeBoneNameToken(name);
+  const isLeft =
+    normalized.includes('left') ||
+    normalized.endsWith('l') ||
+    normalized.includes('arml') ||
+    normalized.includes('legl') ||
+    normalized.includes('handl');
+  const isRight =
+    normalized.includes('right') ||
+    normalized.endsWith('r') ||
+    normalized.includes('armr') ||
+    normalized.includes('legr') ||
+    normalized.includes('handr');
+
+  if (
+    normalized.includes('root') ||
+    normalized.includes('hips') ||
+    normalized.includes('pelvis')
+  ) {
+    return 'root';
+  }
+  if (
+    normalized.includes('upperchest') ||
+    normalized.includes('chest') ||
+    normalized.includes('spine2')
+  ) {
+    return 'chest';
+  }
+  if (normalized.includes('spine')) {
+    return 'spine';
+  }
+  if (normalized.includes('head') || normalized.includes('neck')) {
+    return 'head';
+  }
+  if (normalized.includes('hand')) {
+    return isLeft ? 'hand_l' : isRight ? 'hand_r' : null;
+  }
+  if (
+    normalized.includes('arm') ||
+    normalized.includes('shoulder') ||
+    normalized.includes('upperarm') ||
+    normalized.includes('lowerarm') ||
+    normalized.includes('forearm')
+  ) {
+    return isLeft ? 'arm_l' : isRight ? 'arm_r' : null;
+  }
+  if (
+    normalized.includes('leg') ||
+    normalized.includes('thigh') ||
+    normalized.includes('calf') ||
+    normalized.includes('foot')
+  ) {
+    return isLeft ? 'leg_l' : isRight ? 'leg_r' : null;
+  }
+  return null;
+}
+
+function upsertTrackKeyframe(
+  track: AnimationEditorTrack,
+  time: number,
+  value: AnimationEditorKeyframeValue,
+  easing: AnimationEditorKeyframe['easing'] = 'linear'
+): AnimationEditorTrack {
+  const existingIndex = track.keyframes.findIndex((keyframe) => Math.abs(keyframe.time - time) < 1e-6);
+  const keyframes = [...track.keyframes];
+  if (existingIndex >= 0) {
+    keyframes[existingIndex] = {
+      ...keyframes[existingIndex],
+      value: cloneKeyframeValue(value),
+      easing,
+    };
+  } else {
+    keyframes.push({
+      id: crypto.randomUUID(),
+      time,
+      value: cloneKeyframeValue(value),
+      easing,
+    });
+  }
+  return sortTrackKeyframes({
+    ...track,
+    keyframes,
+  });
+}
+
+function buildNextSplitClipName(state: AnimatorEditorState, clipName: string) {
+  const existingNames = new Set(state.clips.map((clip) => clip.name));
+  let index = 2;
+  let candidate = `${clipName} Split ${index}`;
+  while (existingNames.has(candidate)) {
+    index += 1;
+    candidate = `${clipName} Split ${index}`;
+  }
+  return candidate;
+}
+
+function buildRetargetedClipName(state: AnimatorEditorState, clipName: string) {
+  const existingNames = new Set(state.clips.map((clip) => clip.name));
+  let candidate = `${clipName} Retargeted`;
+  let suffix = 2;
+  while (existingNames.has(candidate)) {
+    candidate = `${clipName} Retargeted ${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function buildTargetRigBoneLookup(bones: RigBone[]) {
+  const byExact = new Map<string, RigBone>();
+  const bySlot = new Map<string, RigBone>();
+  bones.forEach((bone) => {
+    byExact.set(normalizeBoneNameToken(bone.name), bone);
+    const slot = inferHumanoidSlot(bone.name);
+    if (slot && !bySlot.has(slot)) {
+      bySlot.set(slot, bone);
+    }
+  });
+  return {
+    byExact,
+    bySlot,
+  };
+}
+
+export function saveCurrentAnimatorPoseToLibrary(
+  state: AnimatorEditorState,
+  requestedName?: string | null
+): AnimatorEditorState {
+  const nextName =
+    typeof requestedName === 'string' && requestedName.trim().length > 0
+      ? requestedName.trim()
+      : buildNextPoseLibraryName(state);
+  const nextEntry: AnimatorPoseLibraryEntry = {
+    id: crypto.randomUUID(),
+    name: nextName,
+    createdAt: new Date().toISOString(),
+    bones: state.bones.map((bone) => ({
+      boneId: bone.id,
+      restPosition: { ...bone.restPosition },
+      length: bone.length,
+    })),
+    shapeKeys: state.shapeKeys.map((shapeKey) => ({
+      shapeKeyId: shapeKey.id,
+      weight: clamp01(shapeKey.weight, 0),
+    })),
+  };
+  return {
+    ...state,
+    poseLibrary: [...state.poseLibrary, nextEntry],
+  };
+}
+
+export function applyAnimatorPoseLibraryEntry(
+  state: AnimatorEditorState,
+  poseId: string
+): AnimatorEditorState {
+  const poseEntry = state.poseLibrary.find((entry) => entry.id === poseId);
+  if (!poseEntry) {
+    return state;
+  }
+  const pose = clonePoseLibraryEntry(poseEntry);
+  const boneMap = new Map(pose.bones.map((bone) => [bone.boneId, bone]));
+  const shapeKeyMap = new Map(pose.shapeKeys.map((shapeKey) => [shapeKey.shapeKeyId, shapeKey]));
+  return {
+    ...state,
+    bones: state.bones.map((bone) => {
+      const snapshot = boneMap.get(bone.id);
+      return snapshot
+        ? {
+            ...bone,
+            restPosition: { ...snapshot.restPosition },
+            length: snapshot.length,
+          }
+        : bone;
+    }),
+    shapeKeys: state.shapeKeys.map((shapeKey) => {
+      const snapshot = shapeKeyMap.get(shapeKey.id);
+      return snapshot
+        ? {
+            ...shapeKey,
+            weight: clamp01(snapshot.weight, 0),
+          }
+        : shapeKey;
+    }),
+  };
+}
+
+export function deleteAnimatorPoseLibraryEntry(
+  state: AnimatorEditorState,
+  poseId: string
+): AnimatorEditorState {
+  if (!state.poseLibrary.some((entry) => entry.id === poseId)) {
+    return state;
+  }
+  return {
+    ...state,
+    poseLibrary: state.poseLibrary.filter((entry) => entry.id !== poseId),
+  };
+}
+
+function findMirrorTokenPair(name: string) {
+  const pairs: Array<[string, string]> = [
+    ['_L', '_R'],
+    ['_R', '_L'],
+    ['.L', '.R'],
+    ['.R', '.L'],
+    [' left', ' right'],
+    [' right', ' left'],
+    ['_l', '_r'],
+    ['_r', '_l'],
+  ];
+  for (const [from, to] of pairs) {
+    if (name.includes(from)) {
+      return {
+        mirroredName: name.replace(from, to),
+        directional: true,
+      };
+    }
+  }
+  return {
+    mirroredName: name,
+    directional: false,
+  };
+}
+
+export function mirrorCurrentAnimatorPose(state: AnimatorEditorState): AnimatorEditorState {
+  const bonesByName = new Map(state.bones.map((bone) => [bone.name, bone]));
+  const nextBones = state.bones.map((bone) => {
+    const mirrorInfo = findMirrorTokenPair(bone.name);
+    if (!mirrorInfo.directional) {
+      return bone;
+    }
+    const mirroredBone = bonesByName.get(mirrorInfo.mirroredName);
+    if (!mirroredBone) {
+      return bone;
+    }
+    return {
+      ...bone,
+      restPosition: {
+        x: -mirroredBone.restPosition.x,
+        y: mirroredBone.restPosition.y,
+        z: mirroredBone.restPosition.z,
+      },
+      length: mirroredBone.length,
+    };
+  });
+
+  const shapeKeysByName = new Map(state.shapeKeys.map((shapeKey) => [shapeKey.name, shapeKey]));
+  const nextShapeKeys = state.shapeKeys.map((shapeKey) => {
+    const mirrorInfo = findMirrorTokenPair(shapeKey.name);
+    if (!mirrorInfo.directional) {
+      return shapeKey;
+    }
+    const mirroredShapeKey = shapeKeysByName.get(mirrorInfo.mirroredName);
+    if (!mirroredShapeKey) {
+      return shapeKey;
+    }
+    return {
+      ...shapeKey,
+      weight: clamp01(mirroredShapeKey.weight, 0),
+    };
+  });
+
+  return {
+    ...state,
+    bones: nextBones,
+    shapeKeys: nextShapeKeys,
+  };
+}
+
+export function copySelectedAnimationKeyframes(
+  state: AnimatorEditorState,
+  selectedKeyframeIds: Iterable<string>
+): AnimationKeyframeClipboard | null {
+  const clip = findActiveAnimatorClip(state);
+  const bounds = findSelectedKeyframeTimeBounds(state, selectedKeyframeIds);
+  if (!clip || !bounds) {
+    return null;
+  }
+  const selectedIds = new Set(selectedKeyframeIds);
+  const tracks = clip.tracks
+    .map((track) => {
+      const keyframes = track.keyframes
+        .filter((keyframe) => selectedIds.has(keyframe.id))
+        .map((keyframe) => ({
+          timeOffset: keyframe.time - bounds.start,
+          value: cloneKeyframeValue(keyframe.value),
+          easing: keyframe.easing,
+        }));
+      if (keyframes.length === 0) {
+        return null;
+      }
+      return {
+        trackId: track.id,
+        name: track.name,
+        path: track.path,
+        property: track.property,
+        type: track.type,
+        color: track.color,
+        keyframes,
+      };
+    })
+    .filter((track): track is AnimationKeyframeClipboardTrack => Boolean(track));
+  if (tracks.length === 0) {
+    return null;
+  }
+  return {
+    sourceClipId: clip.id,
+    sourceClipName: clip.name,
+    rangeStart: bounds.start,
+    rangeEnd: bounds.end,
+    tracks,
+  };
+}
+
+export function copyCurrentAnimatorPose(
+  state: AnimatorEditorState,
+  sourceLabel = 'Current Pose'
+): AnimationPoseClipboard {
+  return {
+    sourceLabel,
+    bones: state.bones.map((bone) => ({
+      boneId: bone.id,
+      restPosition: { ...bone.restPosition },
+      length: bone.length,
+    })),
+    shapeKeys: state.shapeKeys.map((shapeKey) => ({
+      shapeKeyId: shapeKey.id,
+      weight: clamp01(shapeKey.weight, 0),
+    })),
+  };
+}
+
+export function pasteAnimatorPoseFromClipboard(
+  state: AnimatorEditorState,
+  clipboard: AnimationPoseClipboard | null | undefined,
+  options?: AnimationPosePasteOptions
+): AnimatorEditorState {
+  if (!clipboard) {
+    return state;
+  }
+  const blend = clamp01(options?.blend, 1);
+  const offset = {
+    x: Number(options?.offset?.x ?? 0),
+    y: Number(options?.offset?.y ?? 0),
+    z: Number(options?.offset?.z ?? 0),
+  };
+  const boneMap = new Map(clipboard.bones.map((bone) => [bone.boneId, bone]));
+  const shapeKeyMap = new Map(clipboard.shapeKeys.map((shapeKey) => [shapeKey.shapeKeyId, shapeKey]));
+  return {
+    ...state,
+    bones: state.bones.map((bone) => {
+      const snapshot = boneMap.get(bone.id);
+      return snapshot
+        ? {
+            ...bone,
+            restPosition: {
+              x: bone.restPosition.x + (snapshot.restPosition.x + offset.x - bone.restPosition.x) * blend,
+              y: bone.restPosition.y + (snapshot.restPosition.y + offset.y - bone.restPosition.y) * blend,
+              z: bone.restPosition.z + (snapshot.restPosition.z + offset.z - bone.restPosition.z) * blend,
+            },
+            length: bone.length + (snapshot.length - bone.length) * blend,
+          }
+        : bone;
+    }),
+    shapeKeys: state.shapeKeys.map((shapeKey) => {
+      const snapshot = shapeKeyMap.get(shapeKey.id);
+      return snapshot
+        ? {
+            ...shapeKey,
+            weight: clamp01(shapeKey.weight + (snapshot.weight - shapeKey.weight) * blend, 0),
+          }
+        : shapeKey;
+    }),
+  };
+}
+
+export function pasteAnimationKeyframesIntoActiveClip(
+  state: AnimatorEditorState,
+  clipboard: AnimationKeyframeClipboard | null | undefined,
+  targetTime: number
+): AnimatorEditorState {
+  const clip = findActiveAnimatorClip(state);
+  if (!clip || !clipboard || clipboard.tracks.length === 0) {
+    return state;
+  }
+  return updateActiveClipInState(state, (activeClip) => {
+    const nextTracks = [...activeClip.tracks];
+    clipboard.tracks.forEach((clipboardTrack) => {
+      const trackIndex = nextTracks.findIndex(
+        (track) =>
+          track.id === clipboardTrack.trackId ||
+          (track.path === clipboardTrack.path &&
+            track.property === clipboardTrack.property &&
+            track.type === clipboardTrack.type)
+      );
+      const targetTrack =
+        trackIndex >= 0
+          ? nextTracks[trackIndex]
+          : {
+              id: crypto.randomUUID(),
+              name: clipboardTrack.name,
+              path: clipboardTrack.path,
+              property: clipboardTrack.property,
+              type: clipboardTrack.type,
+              color: clipboardTrack.color,
+              visible: true,
+              locked: false,
+              keyframes: [],
+            };
+      const mergedTrack = sortTrackKeyframes({
+        ...targetTrack,
+        keyframes: [
+          ...targetTrack.keyframes,
+          ...clipboardTrack.keyframes.map((keyframe) => ({
+            id: crypto.randomUUID(),
+            time: clampTime(targetTime + keyframe.timeOffset, activeClip.duration),
+            value: cloneKeyframeValue(keyframe.value),
+            easing: keyframe.easing,
+          })),
+        ],
+      });
+      if (trackIndex >= 0) {
+        nextTracks[trackIndex] = mergedTrack;
+      } else {
+        nextTracks.push(mergedTrack);
+      }
+    });
+    return {
+      ...activeClip,
+      tracks: nextTracks,
+    };
+  });
+}
+
+export function splitActiveAnimationClipAtTime(
+  state: AnimatorEditorState,
+  splitTime: number
+): AnimatorEditorState {
+  const clip = findActiveAnimatorClip(state);
+  if (!clip) {
+    return state;
+  }
+  const clampedSplit = clampTime(splitTime, clip.duration);
+  const minDuration = 1 / clip.frameRate;
+  if (clampedSplit <= minDuration || clampedSplit >= clip.duration - minDuration) {
+    return state;
+  }
+  const rightDuration = clip.duration - clampedSplit;
+  const nextClipId = crypto.randomUUID();
+  const rightClip: AnimationEditorClip = {
+    ...clip,
+    id: nextClipId,
+    name: buildNextSplitClipName(state, clip.name),
+    duration: rightDuration,
+    tracks: clip.tracks.map((track) => ({
+      ...track,
+      id: crypto.randomUUID(),
+      keyframes: track.keyframes
+        .filter((keyframe) => keyframe.time >= clampedSplit - 1e-6)
+        .map((keyframe) => ({
+          ...keyframe,
+          id: crypto.randomUUID(),
+          time: clampTime(keyframe.time - clampedSplit, rightDuration),
+          value: cloneKeyframeValue(keyframe.value),
+        })),
+    })),
+  };
+  const nextState = updateActiveClipInState(state, (activeClip) => ({
+    ...activeClip,
+    duration: clampedSplit,
+    tracks: activeClip.tracks.map((track) =>
+      sortTrackKeyframes({
+        ...track,
+        keyframes: track.keyframes
+          .filter((keyframe) => keyframe.time <= clampedSplit + 1e-6)
+          .map((keyframe) => ({
+            ...keyframe,
+            value: cloneKeyframeValue(keyframe.value),
+          })),
+      })
+    ),
+  }));
+  const clips = [...nextState.clips, rightClip];
+  return {
+    ...nextState,
+    activeClipId: rightClip.id,
+    clips,
+    nlaStrips: nextState.nlaStrips.map((strip) =>
+      strip.clipId === clip.id
+        ? {
+            ...strip,
+            end: strip.start + clampedSplit,
+          }
+        : strip
+    ),
+  };
+}
+
+export function bakeCurrentAnimatorPoseToActiveClip(
+  state: AnimatorEditorState,
+  time: number
+): AnimatorEditorState {
+  const clip = findActiveAnimatorClip(state);
+  if (!clip) {
+    return state;
+  }
+  const clampedTime = clampTime(time, clip.duration);
+  return updateActiveClipInState(state, (activeClip) => {
+    const trackEntries = [...activeClip.tracks];
+    const ensureTrack = (
+      path: string,
+      property: string,
+      valueType: AnimationEditorTrackType,
+      color: string
+    ) => {
+      const existing = trackEntries.find(
+        (track) => track.path === path && track.property === property && track.type === valueType
+      );
+      if (existing) {
+        return existing;
+      }
+      const nextTrack: AnimationEditorTrack = {
+        id: crypto.randomUUID(),
+        name: buildTrackNameFromPath(path, property),
+        path,
+        property,
+        type: valueType,
+        color,
+        visible: true,
+        locked: false,
+        keyframes: [],
+      };
+      trackEntries.push(nextTrack);
+      return nextTrack;
+    };
+
+    state.bones.forEach((bone, boneIndex) => {
+      const path = `Rig/${bone.name}`;
+      const color = TRACK_COLORS[boneIndex % TRACK_COLORS.length];
+      const properties: Array<[string, number]> = [
+        ['position.x', bone.restPosition.x],
+        ['position.y', bone.restPosition.y],
+        ['position.z', bone.restPosition.z],
+      ];
+      properties.forEach(([property, value]) => {
+        const track = ensureTrack(path, property, inferTrackTypeFromProperty(property), color);
+        const bakedTrack = upsertTrackKeyframe(track, clampedTime, value);
+        const index = trackEntries.findIndex((entry) => entry.id === track.id);
+        trackEntries[index] = bakedTrack;
+      });
+    });
+
+    state.shapeKeys.forEach((shapeKey) => {
+      const property = `shapeKey.${shapeKey.id}`;
+      const track = ensureTrack('ShapeKeys', property, 'shapeKey', '#ec4899');
+      const bakedTrack = upsertTrackKeyframe(track, clampedTime, shapeKey.weight);
+      const index = trackEntries.findIndex((entry) => entry.id === track.id);
+      trackEntries[index] = bakedTrack;
+    });
+
+    return {
+      ...activeClip,
+      tracks: trackEntries.map((track) => sortTrackKeyframes(track)),
+    };
+  });
+}
+
+export function bakeCurrentAnimatorPoseRangeToActiveClip(
+  state: AnimatorEditorState,
+  startTime: number,
+  endTime: number,
+  stepSeconds?: number
+): AnimatorEditorState {
+  const clip = findActiveAnimatorClip(state);
+  if (!clip) {
+    return state;
+  }
+  const start = clampTime(Math.min(startTime, endTime), clip.duration);
+  const end = clampTime(Math.max(startTime, endTime), clip.duration);
+  const step =
+    Number.isFinite(stepSeconds) && (stepSeconds ?? 0) > 0
+      ? Number(stepSeconds)
+      : 1 / clip.frameRate;
+  if (Math.abs(end - start) < 1e-6) {
+    return bakeCurrentAnimatorPoseToActiveClip(state, start);
+  }
+  let nextState = state;
+  let cursor = start;
+  let iterations = 0;
+  while (cursor <= end + 1e-6 && iterations < 4096) {
+    nextState = bakeCurrentAnimatorPoseToActiveClip(nextState, cursor);
+    cursor += step;
+    iterations += 1;
+  }
+  const bakedEnd = start + step * Math.max(0, iterations - 1);
+  if (Math.abs(bakedEnd - end) > 1e-6) {
+    nextState = bakeCurrentAnimatorPoseToActiveClip(nextState, end);
+  }
+  return nextState;
+}
+
+export function retargetActiveAnimationClipToCurrentRig(
+  state: AnimatorEditorState
+): AnimationRetargetResult {
+  const clip = findActiveAnimatorClip(state);
+  if (!clip) {
+    return {
+      state,
+      retargetedClipId: null,
+      matchedTrackCount: 0,
+      skippedTrackCount: 0,
+      positionScale: 1,
+      normalizedPositionTrackCount: 0,
+    };
+  }
+  const targetLookup = buildTargetRigBoneLookup(state.bones);
+  const positionScale = estimateAnimatorRigHeight(state.bones) / DEFAULT_HUMANOID_RIG_HEIGHT;
+  const retargetedTracks: AnimationEditorTrack[] = [];
+  let matchedTrackCount = 0;
+  let skippedTrackCount = 0;
+  let normalizedPositionTrackCount = 0;
+
+  clip.tracks.forEach((track) => {
+    if (!track.path.startsWith('Rig/')) {
+      const clonedTrack = cloneTrack(track);
+      if (track.type === 'position' && Math.abs(positionScale - 1) > 1e-6) {
+        clonedTrack.keyframes = clonedTrack.keyframes.map((keyframe) => ({
+          ...keyframe,
+          value: scaleKeyframeValue(keyframe.value, positionScale),
+        }));
+        normalizedPositionTrackCount += 1;
+      }
+      retargetedTracks.push(clonedTrack);
+      matchedTrackCount += 1;
+      return;
+    }
+    const sourceBoneName = track.path.split('/').pop() ?? track.path;
+    const exactTarget = targetLookup.byExact.get(normalizeBoneNameToken(sourceBoneName)) ?? null;
+    const slot = inferHumanoidSlot(sourceBoneName);
+    const slotTarget = slot ? targetLookup.bySlot.get(slot) ?? null : null;
+    const targetBone = exactTarget ?? slotTarget;
+    if (!targetBone) {
+      skippedTrackCount += 1;
+      return;
+    }
+    const shouldScaleTrack = track.type === 'position' && Math.abs(positionScale - 1) > 1e-6;
+    retargetedTracks.push({
+      ...track,
+      id: crypto.randomUUID(),
+      name: buildTrackNameFromPath(`Rig/${targetBone.name}`, track.property),
+      path: `Rig/${targetBone.name}`,
+      keyframes: track.keyframes.map((keyframe) => ({
+        ...keyframe,
+        id: crypto.randomUUID(),
+        value: shouldScaleTrack
+          ? scaleKeyframeValue(keyframe.value, positionScale)
+          : cloneKeyframeValue(keyframe.value),
+      })),
+    });
+    if (shouldScaleTrack) {
+      normalizedPositionTrackCount += 1;
+    }
+    matchedTrackCount += 1;
+  });
+
+  if (retargetedTracks.length === 0) {
+    return {
+      state,
+      retargetedClipId: null,
+      matchedTrackCount: 0,
+      skippedTrackCount,
+      positionScale,
+      normalizedPositionTrackCount: 0,
+    };
+  }
+
+  const retargetedClip: AnimationEditorClip = {
+    ...clip,
+    id: crypto.randomUUID(),
+    name: buildRetargetedClipName(state, clip.name),
+    tracks: retargetedTracks,
+  };
+
+  return {
+    state: {
+      ...state,
+      activeClipId: retargetedClip.id,
+      clips: [...state.clips, retargetedClip],
+    },
+    retargetedClipId: retargetedClip.id,
+    matchedTrackCount,
+    skippedTrackCount,
+    positionScale,
+    normalizedPositionTrackCount,
   };
 }
 

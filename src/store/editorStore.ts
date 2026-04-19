@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { createStore, type StoreApi } from 'zustand/vanilla';
 import { subscribeWithSelector } from 'zustand/middleware';
 import type { Entity } from '@/types/engine';
 import type { EngineStore } from './editorStore.types';
@@ -7,13 +8,27 @@ import { createEditorSlice } from './slices/editorSlice';
 import { createProjectSlice } from './slices/projectSlice';
 import { createRuntimeSlice } from './slices/runtimeSlice';
 
+const createEngineStoreSlices = (...args: Parameters<typeof createProjectSlice>): EngineStore => ({
+  ...createProjectSlice(...args),
+  ...createEditorSlice(...args),
+  ...createAISlice(...args),
+  ...createRuntimeSlice(...args),
+});
+
+export type EngineStoreApi = StoreApi<EngineStore>;
+
+export function createIsolatedEngineStore(
+  initialState?: Partial<EngineStore>
+): EngineStoreApi {
+  const store = createStore<EngineStore>()(subscribeWithSelector(createEngineStoreSlices));
+  if (initialState) {
+    store.setState(initialState, false);
+  }
+  return store;
+}
+
 export const useEngineStore = create<EngineStore>()(
-  subscribeWithSelector((...args) => ({
-    ...createProjectSlice(...args),
-    ...createEditorSlice(...args),
-    ...createAISlice(...args),
-    ...createRuntimeSlice(...args),
-  }))
+  subscribeWithSelector(createEngineStoreSlices)
 );
 
 export type { EngineStore, HistoryEntry } from './editorStore.types';

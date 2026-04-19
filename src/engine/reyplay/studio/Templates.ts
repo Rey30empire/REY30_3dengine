@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { Component, Entity } from '@/types/engine';
+import { createStarterTerrainData } from '@/engine/scene/terrainAuthoring';
 
 export type TemplateStarter = 'base' | 'arena' | 'platformer';
 
@@ -79,13 +80,7 @@ export function makeStarterTerrain(name = 'Terrain Starter') {
     id: uuidv4(),
     type: 'Terrain',
     enabled: true,
-    data: {
-      width: 64,
-      height: 64,
-      depth: 64,
-      heightmap: [],
-      layers: [],
-    },
+    data: createStarterTerrainData() as unknown as Record<string, unknown>,
   });
 
   return {

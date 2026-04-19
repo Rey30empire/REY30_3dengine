@@ -4,6 +4,11 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { authErrorToResponse, requireSession } from '@/lib/security/auth';
+import {
+  getStoredLocalProviderBaseUrl,
+  isLocalProviderConfigError,
+  resolveEnabledLocalProviderBaseUrl,
+} from '@/lib/security/local-provider-policy';
 import { getUserScopedConfig, touchProviderUsage } from '@/lib/security/user-api-config';
 import {
   createCorrelationId,
@@ -45,11 +50,15 @@ async function resolveProviderConfig(request: NextRequest): Promise<VllmConfig> 
   const user = await requireSession(request, 'VIEWER');
   const scoped = await getUserScopedConfig(user.id);
   const provider = scoped.localConfig.vllm;
+  const enabled = !!provider.enabled;
+  const baseUrl = enabled
+    ? resolveEnabledLocalProviderBaseUrl('vllm', provider.baseUrl)
+    : getStoredLocalProviderBaseUrl('vllm', provider.baseUrl);
 
   return {
     userId: user.id,
-    enabled: !!provider.enabled,
-    baseUrl: provider.baseUrl || 'http://localhost:8000',
+    enabled,
+    baseUrl,
     apiKey: provider.apiKey || '',
     defaultModel: provider.model || 'meta-llama/Llama-3.1-8B-Instruct',
   };
@@ -111,6 +120,17 @@ export async function GET(request: NextRequest) {
     const text = String(error || '');
     if (text.includes('UNAUTHORIZED') || text.includes('FORBIDDEN')) {
       return authErrorToResponse(error);
+    }
+    if (isLocalProviderConfigError(error)) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: error.code,
+          running: false,
+          configured: false,
+        },
+        { status: 200 }
+      );
     }
     if (error instanceof RemoteFetchError) {
       return publicErrorResponse({
@@ -239,6 +259,14 @@ export async function POST(request: NextRequest) {
     const text = String(error || '');
     if (text.includes('UNAUTHORIZED') || text.includes('FORBIDDEN')) {
       return authErrorToResponse(error);
+    }
+    if (isLocalProviderConfigError(error)) {
+      return publicErrorResponse({
+        status: error.status,
+        error: error.message,
+        code: error.code,
+        correlationId,
+      });
     }
     if (error instanceof RemoteFetchError) {
       return publicErrorResponse({
